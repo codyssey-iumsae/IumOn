@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from config import ROOT
 from analysis import analyze
-from engine import load_catalog,retrieve,semantic_merge,assess,finalize,personalize,next_questions,GROUPS
+from engine import load_catalog,retrieve,semantic_merge,assess,finalize,personalize,next_questions,GROUPS,TOWNS
 from llm import configured,chat_json
 from journey import understand_story,prepare,intake_plan
 
@@ -41,14 +41,13 @@ async def lifespan(app):
     task.cancel()
 
 app=FastAPI(title='이음온 · 이음새의 청양 맞춤 복지',version='0.4.0',lifespan=lifespan)
-TOWNS=['청양읍','운곡면','대치면','정산면','목면','청남면','장평면','남양면','화성면','비봉면']
 TOPICS=Literal['생활비','건강','돌봄','주거','일자리','이동']
 
 class Profile(BaseModel):
     model_config=ConfigDict(extra='forbid')
     age:int=Field(ge=65,le=120)
     region:Literal['청양군']='청양군'
-    town:Literal['청양읍','운곡면','대치면','정산면','목면','청남면','장평면','남양면','화성면','비봉면','unknown']='unknown'
+    town:Literal[(*TOWNS,'unknown')]='unknown'
     priority:TOPICS='생활비'
     needs:list[TOPICS]=Field(default_factory=list,max_length=5)
     household:Literal['alone','together','unknown']='unknown'
@@ -107,7 +106,7 @@ QUESTION_BANK['mobility']['hint']='방문이 어려워도 지원 자격이나 �
 QUESTION_BANK['digital']['hint']='가능한 신청 경로를 찾기 위한 질문이며 추천 순위에는 반영하지 않아요.'
 BASIC_QUESTIONS=[
  {'field':'age','title':'만 나이가 어떻게 되세요?','hint':'청양군 만 65세 이상 주민 본인을 위한 혜택을 찾아요.','type':'number'},
- {'field':'town','title':'청양군 어느 읍·면에 사세요?','hint':'주민등록상 거주지를 선택해 주세요.','type':'town'},
+ {'field':'town','title':'청양군 어느 읍·면에 사세요?','hint':'주민등록상 거주지를 선택해 주세요. 사시는 읍·면을 위한 사업을 먼저 살펴봐요.','type':'town'},
  {'field':'needs','title':'어떤 도움이 필요하세요?','hint':'여러 개를 선택할 수 있어요.','type':'multi'},
  {'field':'priority','title':'지금 가장 필요한 도움은 무엇인가요?','hint':'선택한 분야를 먼저 살펴드려요. 점수를 조절할 필요는 없어요.','type':'priority'},
 ]
@@ -132,7 +131,7 @@ def status():
     _,meta=load_catalog()
     return {'name':'이음온','team':'이음새','version':'0.4.0','data':meta,
             'llm':{'configured':configured(),'model':os.getenv('LLM_MODEL','gpt-5.4-mini')},
-            'questions':BASIC_QUESTIONS,'question_bank':QUESTION_BANK,'groups':GROUPS}
+            'questions':BASIC_QUESTIONS,'question_bank':QUESTION_BANK,'groups':GROUPS,'towns':TOWNS}
 
 class RecommendRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -185,7 +184,7 @@ def run_recommendation(token,request):
         result={'policies':matches,'groups':groups,'questions':questions,'relations':relations,
             'meta':{**meta,'reviewed':len(chosen),'merged':len(chosen)-len(merged),'analysis_failed':len(failed),
                     'personalized':personalized,'profile_sent_to_llm':request.consent,
-                    'scope_note':f'전체 {len(catalog)}개 후보 중 필요 분야·어르신 관련성을 기준으로 {len(chosen)}개 원문을 이번에 검토했어요.'},
+                    'scope_note':f'전체 {len(catalog)}개 후보 중 필요한 도움과의 관련성·어르신 대상·지역을 기준으로 {len(chosen)}개 원문을 이번에 검토했어요.'},
             'notice':'조건 확인 결과는 신청 자격 확정이 아닙니다. 선정확률은 추정하지 않으며 신청 장벽은 추천 순위에 반영하지 않습니다.'}
         update_job(token,state='done',stage='검토를 마쳤어요.',result=result)
     except Exception:

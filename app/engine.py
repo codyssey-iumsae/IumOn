@@ -1,4 +1,4 @@
-"""Retrieval -> grounded LLM conditions -> tri-state eligibility -> benefit order.
+"""Retrieval -> grounded LLM conditions -> tri-state eligibility -> RANKING order.
 Application access is separate from eligibility and never changes ranking.
 """
 import copy
@@ -22,6 +22,8 @@ TOPICS={'생활비':['연금','생계','생활비','수당','장려금','요금'
         '이동':['교통','이동','택시','버스','여객','운임']}
 GROUPS={'matched':'확인한 주요 조건이 맞아요','check':'몇 가지 더 확인해요',
         'assistance':'신청에 도움이 필요해요','receiving':'이미 받고 있는 혜택','excluded':'현재 조건과 맞지 않아요'}
+TOWNS=('청양읍','운곡면','대치면','정산면','목면','청남면','장평면','남양면','화성면','비봉면')
+REGION_TIERS={'here':0,'청양군':1,'충청남도':2,'전국':3,'elsewhere':4}
 
 def text(value):
     return html.unescape(re.sub('<[^>]+>','',str(value or ''))).strip()
@@ -146,25 +148,62 @@ def load_catalog():
     s,d=DATA_DIR/'snapshot.json',DATA_DIR/'details.json'
     return _load(s.stat().st_mtime_ns if s.exists() else 0,d.stat().st_mtime_ns if d.exists() else 0)
 
-def direct_relevance(p,profile):
-    focus=' '.join(profile.get('focus_summary') or profile.get('story_summary',[]))
-    title=p['title'];summary=p.get('summary','')
-    concepts=[(('무릎','관절'),('무릎','인공관절','관절수술')),
-              (('택시','교통비','이동 수단','병원 이동','이동이','이동의'),('택시','교통비','이동지원','이동 지원','대중교통','버스','운임')),
-              (('눈','시력'),('개안','안검진','시력','백내장')),
-              (('난방','추위'),('난방','에너지바우처')),
-              (('식사','끼니'),('급식','식사','도시락'))]
-    direct=any(any(w in focus for w in words) and any(w in title for w in policy_words)
-               for words,policy_words in concepts)
-    contextual=any(any(w in focus for w in words) and any(w in summary for w in policy_words)
-                   for words,policy_words in concepts)
-    return 0 if direct else 1 if contextual else 2
+def named_towns(value):
+    """Towns a text names. None when a town is named only to exclude it, so nothing can be claimed."""
+    # A town name glued to a preceding word is another word (항목면제, 연말정산면제); only 청양군정산면 is allowed.
+    named=[t for t in TOWNS if re.search(r'(?:(?<![가-힣])|(?<=군))'+t,value)]
+    return None if any(re.search(t+r'[^,.\n]{0,8}제외',value) for t in named) else named
+
+def policy_towns(p):
+    # Summary, benefit and method are skipped: a 읍 there is usually a venue such as a clinic address.
+    return named_towns(' '.join(v.get(f) or '' for v in p.get('versions',[p]) for f in ('title','target','criteria')))
+
+def region_fit(p,town):
+    named=policy_towns(p)
+    if not named:return p['scope']
+    return 'here' if town in named else 'elsewhere' if town in TOWNS else p['scope']
+
+# Story words -> words a matching policy uses, for needs that share no characters with the policy name.
+SYNONYMS=[(('무릎','관절'),('무릎','인공관절','관절수술')),
+          (('택시','교통비','이동 수단','병원 이동','이동이','이동의'),('택시','교통비','이동지원','이동 지원','대중교통','버스','운임')),
+          (('눈','시력'),('개안','안검진','시력','백내장')),
+          (('난방','추위'),('난방','에너지바우처')),
+          (('식사','끼니'),('급식','식사','도시락'))]
+STOP_BIGRAMS=frozenset('지원 사업 서비 비스 대상 어르 르신 노인 청양 양군 주민 필요 부담 어려 려워 려운 힘들 들어 '
+                       '아파 해요 어요 아요 워요 돼요 세요 가요 데요 는데 하고 해서 있어 없어 싶어 같아 요해 담돼'.split())
+
+@lru_cache(maxsize=64)
+def query_bigrams(query):
+    # A trailing particle is dropped so that 병원에 counts as one word (병원), not two pairs.
+    words=[re.sub(r'(?<=..)[이가을를은는에의도와과로]$','',w) for w in re.findall(r'[가-힣a-z0-9]+',query.lower())]
+    return frozenset(w[i:i+2] for w in words for i in range(len(w)-1))-STOP_BIGRAMS
+
+def relevance(p,profile):
+    """Need tier, lower first: 0 direct, 1 related, 2 priority topic, 3 other selected need, 4 unrelated."""
+    # ponytail: lexical only (synonym table + shared character pairs), so a paraphrase such as
+    # "귀가 잘 안 들려요" never reaches 보청기. Upgrade path: rank by a local embedding model such as bge-m3.
+    query=' '.join(profile.get('focus_summary') or profile.get('story_summary') or [])
+    body=' '.join(p.get(f) or '' for f in ('summary','target','benefit'))
+    words=[w for triggers,policy_words in SYNONYMS if any(t in query for t in triggers) for w in policy_words]
+    grams=query_bigrams(query);title,plain=norm(p['title']),norm(body)
+    in_title=sum(g in title for g in grams)
+    if any(w in p['title'] for w in words) or in_title>=2:return 0
+    if any(w in body for w in words) or in_title==1 or sum(g in plain for g in grams)>=2:return 1
+    needs=profile.get('needs',[])
+    first=needs if profile.get('priority_mode') in ('all','unknown') else [profile.get('priority')]
+    return 2 if set(first)&set(p['topics']) else 3 if set(needs)&set(p['topics']) else 4
 
 def retrieve(catalog,profile):
-    priority=profile.get('priority') or next(iter(profile.get('needs',[])),'생활비')
-    return sorted(catalog,key=lambda p:(direct_relevance(p,profile),not p['senior'],
-        (profile.get('priority_mode') not in ('all','unknown') and priority not in p['topics']),p['scope']!='청양군',p['title']))
+    town=profile.get('town')
+    return sorted(catalog,key=lambda p:(relevance(p,profile),not p['senior'],REGION_TIERS[region_fit(p,town)],p['title']))
 
+
+def town_state(expected,town):
+    """State of a region/town condition whose value names 읍·면; None when it names none."""
+    named=named_towns(' '.join(map(str,expected if isinstance(expected,list) else [expected])))
+    if named==[]:return None
+    if named is None or town not in TOWNS:return 'unknown'
+    return 'match' if town in named else 'mismatch'
 
 def eval_tree(node,profile):
     op=node.get('op')
@@ -179,7 +218,10 @@ def eval_tree(node,profile):
     actual=profile.get(field)
     expected=node.get('value')
     state='unknown'
-    if op=='condition' and actual not in (None,'unknown',''):
+    town=town_state(expected,profile.get('town')) if op=='condition' and field in ('region','town') else None
+    if town:state=town
+    # A town value that names no 읍·면 cannot be compared, so it stays unknown.
+    elif op=='condition' and field!='town' and actual not in (None,'unknown',''):
         if field=='region' and actual=='청양군':
             values=expected if isinstance(expected,list) else [expected]
             matched=any(v in ('청양군','충청남도','대한민국') for v in values)
@@ -227,14 +269,11 @@ def application_period(p,a,today=None):
     if app.get('state')=='always':return {'state':'always','label':'원문상 상시 접수 · 예산 확인 필요'}
     return {'state':'unknown','label':'접수기간 확인 필요'}
 
-def benefit_order(p,profile):
-    # No arbitrary currency conversion between cash, services, one-time and recurring benefits.
-    priority=profile.get('priority') or next(iter(profile.get('needs',[])),'생활비')
-    return ((profile.get('priority_mode') not in ('all','unknown') and priority not in p['topics']),not bool(set(profile.get('needs',[]))&set(p['topics'])),p['scope']!='청양군',p['title'])
-
 def assess(p,profile,analysis=None):
     p=copy.deepcopy(p)
     a=analysis or analyze(p,allow_network=False)
+    town=profile.get('town')
+    p['region_fit']=fit=region_fit(p,town)
     if not a:
         return {**p,'group':'check','status':GROUPS['check'],'analysis_state':'pending',
                 'tree':{'state':'unknown','label':'정책 AI 분석 대기'},'checks':[],
@@ -247,6 +286,11 @@ def assess(p,profile,analysis=None):
     if re.search(r'무릎|인공관절',p['title']) and '수술' in p['title'] and profile.get('knee_care')!='surgery':
         tree={'state':'unknown' if tree['state']=='match' else tree['state'],'op':'all','label':'무릎 관련 지원과 상담 필요성 확인',
               'children':[tree,{'state':'unknown','field':'knee_care','label':'의사에게 수술이 필요하다는 설명을 들었는지 확인(통증만으로 자격 판단 불가)'}]}
+    # A town named in the text is a hint, never proof of ineligibility: it can only add a check.
+    named='·'.join(policy_towns(p) or [])
+    if fit=='elsewhere':
+        tree={'state':'unknown' if tree['state']=='match' else tree['state'],'op':'all','label':'거주 읍·면과 조건 확인',
+              'children':[tree,{'state':'unknown','label':f'{town} 주민도 대상인지 확인(원문에 {named}이 적혀 있어요)'}]}
     major_state=tree['state']
     if not a['complete'] and tree['state']=='match':
         tree={'state':'unknown','op':'all','label':'확인한 조건과 추가 선정요건',
@@ -265,12 +309,18 @@ def assess(p,profile,analysis=None):
     if profile.get('pension')=='yes' and re.fullmatch(r'기초연금(?:지급|지원|지원사업)?',norm(p['title'])):
         group='receiving'
     b=a['benefit']
-    related=set(profile.get('needs',[]))&set(a['topics'])
+    topics=a['topics'] or p['topics']
+    tier=relevance({**p,'topics':topics},profile)
+    related=sorted(set(profile.get('needs',[]))&set(topics))
     reasons=[]
-    if related:reasons.append('필요한 도움('+ '·'.join(sorted(related))+')과 관련 있어요.')
+    if tier==0:reasons.append('말씀하신 어려움과 직접 관련된 사업이에요.')
+    elif tier==1:reasons.append('말씀하신 어려움과 관련 있는 사업이에요.')
+    elif related:reasons.append('필요한 도움('+'·'.join(related)+')과 관련 있어요.')
+    if fit=='here':reasons.append(f'{town} 주민을 위한 사업이에요.')
+    elif fit=='elsewhere':reasons.append(f'원문에 {named}이 적혀 있어 {town} 주민도 대상인지 확인해야 해요.')
     reasons.append('확인한 조건은 맞지만 미확인 조건을 더 살펴봐야 해요.' if eligibility=='unknown'
                    else '입력한 정보와 추출한 주요 조건이 맞아요.' if eligibility=='match' else '맞지 않는 조건 또는 접수 마감을 확인했어요.')
-    return {**p,'topics':a['topics'] or p['topics'],'group':group,'status':GROUPS[group],
+    return {**p,'topics':topics,'group':group,'status':GROUPS[group],
         'eligibility_state':eligibility,'major_conditions_state':major_state,'analysis_state':'grounded','tree':tree,'checks':leaves(tree),
         'benefit_info':b,'access':access,'period_status':period,'reasons':reasons,
         'analysis_notes':a['notes'],'score':None,'analysis_model':'gpt-5.4-mini'}
@@ -357,7 +407,7 @@ def personalize(matches,profile):
 def next_questions(matches,profile,question_bank):
     # Only ask fields present in unresolved expressions; never repeat an answered unknown.
     answered=set(profile.get('answered',[]));counts={}
-    direct=[p for p in matches if p['group'] not in ('excluded','receiving') and direct_relevance(p,profile)<2]
+    direct=[p for p in matches if p['group'] not in ('excluded','receiving') and relevance(p,profile)<=1]
     relevant=direct[:6] if direct else [p for p in matches if p['group'] not in ('excluded','receiving') and profile.get('priority') in p['topics']][:6]
     for p in relevant:
         if p['group'] in ('excluded','receiving'):continue
@@ -369,18 +419,25 @@ def next_questions(matches,profile,question_bank):
     return [{**question_bank[f],'impact_count':counts[f],
              'why':str(counts[f])+'개 후보의 조건 또는 신청 경로 확인에 도움이 돼요.'} for f in ordered]
 
+RANKING=[  # earlier criterion wins; each returns a small int, lower first. Access (mobility/digital) is never one.
+    ('group',       lambda p,u:{'receiving':1,'excluded':2}.get(p['group'],0)),
+    ('need',        relevance),
+    ('eligibility', lambda p,u:{'match':0,'unknown':1,'mismatch':2}.get(p.get('eligibility_state'),1)),
+    ('region',      lambda p,u:REGION_TIERS[p.get('region_fit') or region_fit(p,u.get('town'))]),
+    ('period',      lambda p,u:{'open':0,'always':0,'upcoming':1}.get(p.get('period_status',{}).get('state'),2)),
+    ('senior',      lambda p,u:0 if p.get('senior') else 1),
+]
+
 def finalize(matches,profile):
-    # Known cash ceilings are ordered only within the same unit (e.g. monthly cash).
-    ordered=sorted(matches,key=lambda p:(direct_relevance(p,profile),{'match':0,'unknown':1,'mismatch':2}.get(p.get('eligibility_state'),1),benefit_order(p,profile)))
-    if profile.get('focus_summary') or profile.get('story_summary'):return ordered
-    for kind,cycle in [('cash','monthly'),('cash','annual'),('cash','once')]:
-        indices=[i for i,p in enumerate(ordered) if p['benefit_info'].get('kind')==kind and
-                 p['benefit_info'].get('cycle')==cycle and p['benefit_info'].get('amount_krw') is not None]
-        # Do not move a different need priority ahead just because cash is larger.
-        for state in ('match','unknown','mismatch'):
-            for relevance in (True,False):
-                slots=[i for i in indices if ordered[i].get('eligibility_state','unknown')==state
-                       and ((profile.get('priority') in ordered[i]['topics'])==relevance)]
-                values=sorted([ordered[i] for i in slots],key=lambda p:-p['benefit_info']['amount_krw'])
-                for i,p in zip(slots,values):ordered[i]=p
+    keys={id(p):tuple(rank(p,profile) for _,rank in RANKING) for p in matches}
+    ordered=sorted(matches,key=lambda p:(keys[id(p)],p['title'],p['id']))
+    # A larger verified cash ceiling moves up only among exact ties on every criterion and
+    # only against the same unit (monthly vs monthly); different benefit kinds are never converted.
+    slots={}
+    for i,p in enumerate(ordered):
+        b=p['benefit_info']
+        if b.get('kind')=='cash' and b.get('cycle') in ('monthly','annual','once') and b.get('amount_krw') is not None:
+            slots.setdefault((keys[id(p)],b['cycle']),[]).append(i)
+    for indices in slots.values():
+        for i,p in zip(indices,sorted([ordered[i] for i in indices],key=lambda p:-p['benefit_info']['amount_krw'])):ordered[i]=p
     return ordered

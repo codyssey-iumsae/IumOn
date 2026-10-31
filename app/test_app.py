@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from analysis import validate_analysis,validate_tree,valid_evidence,money_in_quote,documents,fingerprint
 from engine import create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
-from server import Profile,RecommendRequest,QUESTION_BANK,BASIC_QUESTIONS
+from server import Profile,RecommendRequest,QUESTION_BANK,BASIC_QUESTIONS,status
 from journey import understand_story,prepare,intake_plan
 
 PROFILE={'age':72,'region':'청양군','priority':'건강','needs':['건강'],'household':'alone','income':'unknown',
@@ -221,5 +221,66 @@ class GroundedTests(unittest.TestCase):
         p=assess(policy(),PROFILE,analysis(routes=[{'kind':'visit','evidence':evidence('method','방문')}]))
         r=prepare(p,{**PROFILE,'mobility':'yes'})
         self.assertTrue(any('이용하기 어렵' in q for q in r['questions']))
+
+    def test_status_towns_are_the_accepted_profile_towns(self):
+        towns=status()['towns']
+        self.assertIn('정산면',towns)
+        for town in towns:self.assertEqual(Profile(age=72,town=town).town,town)
+        with self.assertRaises(ValueError):Profile(age=72,town='서면')
+    def test_own_town_policy_ranks_above_county_wide(self):
+        user={**PROFILE,'town':'정산면'}
+        town=assess(policy(id='z-town',target='청양군 정산면 거주 만 70세 이상'),user,analysis())
+        ranked=finalize([assess(policy(id='a-county'),user,analysis()),town],user)
+        self.assertEqual([p['id'] for p in ranked],['z-town','a-county'])
+        self.assertEqual(ranked[0]['region_fit'],'here')
+    def test_other_town_policy_needs_check_not_mismatch(self):
+        user={**PROFILE,'town':'운곡면'}
+        town=assess(policy(id='a-town',target='청양군 정산면 거주 만 70세 이상'),user,analysis())
+        self.assertEqual((town['region_fit'],town['eligibility_state']),('elsewhere','unknown'))
+        ranked=finalize([town,assess(policy(id='z-county'),user,analysis())],user)
+        self.assertEqual([p['id'] for p in ranked],['z-county','a-town'])
+    def test_town_named_only_as_exclusion_claims_nothing(self):
+        p=policy(target='청양읍을 제외한 면 지역 거주 만 70세 이상')
+        for town in ('청양읍','정산면'):
+            r=assess(p,{**PROFILE,'town':town},analysis())
+            self.assertEqual((r['region_fit'],r['eligibility_state']),('청양군','match'))
+    def test_town_name_inside_another_word_is_not_a_town(self):
+        p=policy(criteria='진료비 본인부담 항목면제, 연말정산면제 대상')
+        self.assertEqual(assess(p,{**PROFILE,'town':'운곡면'},analysis())['region_fit'],'청양군')
+        self.assertEqual(assess(policy(target='청양군목면 거주'),{**PROFILE,'town':'목면'},analysis())['region_fit'],'here')
+    def test_town_region_condition_compares_user_town(self):
+        node=atom(field='region',cmp='eq',value='청양군 정산면',quote='정산면')
+        states=[eval_tree(node,{**PROFILE,'town':t})['state'] for t in ('정산면','운곡면','unknown')]
+        self.assertEqual(states,['match','mismatch','unknown'])
+        self.assertNotEqual(eval_tree(atom(field='region',cmp='eq',value='청양읍'),{**PROFILE,'town':'청양읍'})['state'],'mismatch')
+    def test_town_condition_without_town_name_stays_unknown(self):
+        self.assertEqual(eval_tree(atom(field='town',cmp='eq',value='면 지역'),{**PROFILE,'town':'정산면'})['state'],'unknown')
+    def test_story_words_rank_beyond_synonym_table(self):
+        user={**PROFILE,'focus_summary':['보청기가 필요해요']}
+        hearing=assess(policy(id='hear',title='보청기 구입비 지원'),user,analysis())
+        teeth=assess(policy(id='teeth',title='노인 틀니 지원'),user,analysis())
+        self.assertEqual([p['id'] for p in finalize([teeth,hearing],user)],['hear','teeth'])
+    def test_direct_need_outranks_confirmed_unrelated_policy(self):
+        user={**PROFILE,'focus_summary':['보청기가 필요해요']}
+        hearing=assess(policy(id='hear',title='보청기 구입비 지원'),user,analysis(complete=False))
+        job=assess(policy(id='job',title='노인 일자리 지원',topics=['일자리']),user,analysis(topics=['일자리']))
+        self.assertEqual((hearing['eligibility_state'],job['eligibility_state']),('unknown','match'))
+        self.assertEqual([p['id'] for p in finalize([job,hearing],user)],['hear','job'])
+    def test_open_application_breaks_ties(self):
+        always=assess(policy(id='always'),PROFILE,analysis())
+        unknown=assess(policy(id='unknown',title='가 건강 지원'),PROFILE,analysis(application={'state':'unknown'}))
+        self.assertEqual([p['id'] for p in finalize([unknown,always],PROFILE)],['always','unknown'])
+    def test_preparation_note_names_town(self):
+        user={**PROFILE,'town':'정산면'}
+        r=prepare(assess(policy(),user,analysis()),user)
+        self.assertIn('청양군 정산면에 거주하는 만 72세입니다.',r['consultation_note'])
+    def test_preparation_names_office_only_when_source_does(self):
+        user={**PROFILE,'town':'정산면'}
+        office=policy(method='주소지 행정복지센터 방문 신청')
+        r=prepare(assess(office,user,analysis()),user)
+        self.assertEqual(r['office'],'정산면 행정복지센터')
+        self.assertIn('정산면 행정복지센터',r['next_action'])
+        self.assertEqual(prepare(assess(office,PROFILE,analysis()),PROFILE)['office'],'주소지 읍·면 행정복지센터')
+        self.assertIsNone(prepare(assess(policy(),user,analysis()),user)['office'])
 
 if __name__=='__main__':unittest.main(verbosity=2)
