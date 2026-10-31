@@ -1,12 +1,14 @@
 'use strict';
 (() => {
+ // ponytail: calibration knobs for older speakers, who pause mid-sentence and take a while to begin. Tune from field use.
+ const SILENCE_MS=4000, FIRST_WORDS_MS=10000;
  const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
  const synth=window.speechSynthesis;
- let active=null, generation=0, speechGeneration=0, autoRead=false, voiceConsent=false;
+ let active=null, generation=0, speechGeneration=0, autoRead=false, voiceConsent=false, silenceTimer=null;
  const roots=()=>[document.querySelector('#main'),document.querySelector('#modal-body')].filter(Boolean);
  const sayStatus=(root,text)=>{const el=root?.querySelector('.voice-status');if(el)el.textContent=text;};
  function stopListening(){
-  generation++;
+  generation++;clearTimeout(silenceTimer);silenceTimer=null;
   if(active){const old=active;active=null;try{old.abort();}catch{}}
   document.querySelectorAll('[data-listen]').forEach(b=>{b.textContent='말로 답하기';b.setAttribute('aria-pressed','false');});
  }
@@ -40,6 +42,7 @@
   sayStatus(root,'읽고 있어요. 멈추기를 누르면 중단해요.');next();
  }
  const normalize=s=>String(s).replace(/[\s.,!?~。]/g,'').replace(/(입니다|이에요|예요|이요|이야|살|세요|세)$/,'');
+ const join=(a,b)=>a&&b?a.trimEnd()+' '+b.trimStart():a+b;
  function applyTranscript(root,target,transcript,base){
   if(target){
    if(!target.isConnected)return false;
@@ -48,7 +51,7 @@
     const match=value.replace(/\s/g,'').match(/^(?:만)?(\d{1,3})(?:세|살)?(?:입니다|이에요|예요)?[.!?]?$/);
     if(!match){sayStatus(root,'나이를 숫자로 확인하지 못했어요. 숫자를 직접 입력해 주세요.');return false;}
     value=match[1];
-   }else value=(base?base.trimEnd()+' ':'')+value;
+   }else value=join(base,value);
    const limit=target.maxLength>0?target.maxLength:2000;
    target.value=value.slice(0,limit);target.dispatchEvent(new Event('input',{bubbles:true}));
    sayStatus(root,'들은 내용을 입력했어요. 맞는지 확인하고 다음 버튼을 눌러 주세요.');return true;
@@ -70,29 +73,45 @@
   }
   stopReading();
   const rec=new Recognition(),current=++generation;
-  const base=target?.value||'';
-  active=rec;rec.lang='ko-KR';rec.continuous=false;rec.interimResults=true;
+  const base=target?.value||'', oneAnswer=!target||target.type==='number';
+  active=rec;rec.lang='ko-KR';rec.continuous=true;rec.interimResults=true;
   button.textContent='음성 입력 멈추기';button.setAttribute('aria-pressed','true');
   sayStatus(root,'마이크 연결 중이에요. 연결되면 말씀해 주세요.');
-  rec.onstart=()=>{if(current===generation)sayStatus(root,'듣고 있어요. 편하게 말씀해 주세요.');};
-  let finalText='', lastApplied='', failed=false;
+  let committed='', segment='', lastApplied='', failed=false;
+  const wait=ms=>{clearTimeout(silenceTimer);silenceTimer=setTimeout(finish,ms);};
+  function finish(){
+   stopListening();
+   if(!lastApplied)sayStatus(root,'인식된 말이 없어요. 다시 말하거나 직접 입력해 주세요.');
+   else if(!oneAnswer)sayStatus(root,'말씀이 끝난 것 같아 듣기를 멈췄어요. 들은 내용을 확인해 주세요.');
+  }
+  rec.onstart=()=>{
+   // Restarts after a pause keep the running timer and the status the user is reading. Arming here, not at start(), leaves time on the browser's mic prompt uncounted.
+   if(current!==generation||silenceTimer)return;
+   sayStatus(root,'듣고 있어요. 편하게 말씀해 주세요. 말씀을 마치고 잠시 기다리면 자동으로 멈춰요.');
+   wait(FIRST_WORDS_MS);
+  };
   rec.onresult=e=>{
    if(current!==generation||!root.isConnected||target&&!target.isConnected)return;
-   let interim='';finalText='';
-   for(let i=0;i<e.results.length;i++){if(e.results[i].isFinal)finalText+=e.results[i][0].transcript;else interim+=e.results[i][0].transcript;}
+   wait(SILENCE_MS);
+   let interim='', latest='';segment='';
+   for(let i=0;i<e.results.length;i++){const text=e.results[i][0].transcript;if(e.results[i].isFinal){segment=join(segment,text);latest=text;}else interim+=text;}
    if(interim)sayStatus(root,'듣는 중: '+interim);
-   if(finalText&&finalText!==lastApplied){applyTranscript(root,target,finalText,base);lastApplied=finalText;}
+   // A one-answer field judges only the newest phrase, so a retry after a mismatch is not glued to the wrong words.
+   const heard=oneAnswer?latest:join(committed,segment);
+   if(heard&&heard!==lastApplied){lastApplied=heard;if(applyTranscript(root,target,heard,base)&&oneAnswer)stopListening();}
   };
   rec.onerror=e=>{
-   if(current!==generation)return;
+   if(current!==generation||e.error==='no-speech')return;
    failed=true;
-   const errors={'not-allowed':'마이크 권한이 거부됐어요. 브라우저 권한을 확인하거나 직접 입력해 주세요.','service-not-allowed':'이 환경에서는 음성 인식을 사용할 수 없어요. 직접 입력해 주세요.','audio-capture':'사용할 마이크가 없어요. 연결을 확인해 주세요.','no-speech':'말소리를 듣지 못했어요. 다시 눌러 말씀해 주세요.','network':'음성 인식 연결에 실패했어요. 인터넷을 확인하거나 직접 입력해 주세요.','language-not-supported':'한국어 음성 인식을 지원하지 않는 환경이에요.'};
+   const errors={'not-allowed':'마이크 권한이 거부됐어요. 브라우저 권한을 확인하거나 직접 입력해 주세요.','service-not-allowed':'이 환경에서는 음성 인식을 사용할 수 없어요. 직접 입력해 주세요.','audio-capture':'사용할 마이크가 없어요. 연결을 확인해 주세요.','network':'음성 인식 연결에 실패했어요. 인터넷을 확인하거나 직접 입력해 주세요.','language-not-supported':'한국어 음성 인식을 지원하지 않는 환경이에요.'};
    sayStatus(root,errors[e.error]||'음성 입력을 마치지 못했어요. 다시 시도하거나 직접 입력해 주세요.');
   };
   rec.onend=()=>{
    if(current!==generation)return;
-   active=null;button.textContent='말로 답하기';button.setAttribute('aria-pressed','false');
-   if(!finalText&&!failed)sayStatus(root,'인식된 말이 없어요. 다시 말하거나 직접 입력해 주세요.');
+   if(failed){stopListening();return;}
+   // Browsers end a continuous session on their own after a pause. Every deliberate end bumps generation first, so reaching here means restart.
+   committed=join(committed,segment);segment='';
+   try{rec.start();}catch{finish();}
   };
   try{rec.start();}catch{active=null;generation++;button.textContent='말로 답하기';button.setAttribute('aria-pressed','false');sayStatus(root,'음성 입력을 시작하지 못했어요. 다시 시도하거나 직접 입력해 주세요.');}
  }

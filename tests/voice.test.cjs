@@ -1,9 +1,12 @@
-const {test}=require('node:test');
+const {test,mock}=require('node:test');
 const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../app/static/voice.js'),'utf8');
+const phrase=(transcript,isFinal=true)=>Object.assign([{transcript}],{isFinal});
+const textarea=value=>({isConnected:true,type:'textarea',value,maxLength:2000,dispatchEvent(){}});
 function setup({supported=true,secure=true}={}){
+ mock.timers.reset();mock.timers.enable({apis:['setTimeout']});
  const listeners={},instances=[],spoken=[];
  let dialog;
  const el=()=>({isConnected:true,textContent:'',attrs:{},setAttribute(k,v){this.attrs[k]=v;},dispatchEvent(){},querySelectorAll(){return[];}});
@@ -14,15 +17,18 @@ function setup({supported=true,secure=true}={}){
  const doc={hidden:false,body:{append(e){dialog=e;}},querySelector(s){return s==='#voice-consent'?dialog:null;},
   querySelectorAll(){return[button];},addEventListener(k,cb){listeners[k]=cb;},
   createElement(){return{...el(),showModal(){this.open=true;},close(){this.open=false;},querySelector(s){return s==='[data-voice-agree]'?agree:cancel;}};}};
- class Rec{constructor(){instances.push(this);}start(){this.onstart?.();}abort(){this.aborted=true;this.onend?.();}}
+ class Rec{constructor(){instances.push(this);this.starts=0;}
+  start(){if(this.running)throw new Error('InvalidStateError');this.running=true;this.starts++;this.onstart?.();}
+  end(){this.running=false;this.onend?.();}
+  abort(){this.aborted=true;this.onerror?.({error:'aborted'});this.end();}}
  const synth={cancel(){this.canceled=true;},getVoices(){return[{lang:'ko-KR'}];},speak(u){spoken.push(u);}};
  const window={SpeechRecognition:supported?Rec:undefined,speechSynthesis:synth,isSecureContext:secure,addEventListener(k,cb){listeners[k]=cb;}};
- const ctx={window,document:doc,Event:class{},SpeechSynthesisUtterance:class{constructor(t){this.text=t;}},console};
+ const ctx={window,document:doc,Event:class{},SpeechSynthesisUtterance:class{constructor(t){this.text=t;}},console,setTimeout,clearTimeout};
  window.SpeechSynthesisUtterance=ctx.SpeechSynthesisUtterance;
- vm.runInNewContext(source.replace('roots().forEach(mount);','window.testVoice={listen,read,stopAll,applyTranscript};'),ctx);
+ vm.runInNewContext(source.replace('roots().forEach(mount);','window.testVoice={listen,read,stopAll,applyTranscript,SILENCE_MS,FIRST_WORDS_MS};'),ctx);
  const api=window.testVoice;
- function consent(){api.listen(root,null,button);agree.onclick();}
- function result(rec,text){const row=[{transcript:text}];row.isFinal=true;rec.onresult({results:[row]});}
+ function consent(target=null){api.listen(root,target,button);agree.onclick();return instances.at(-1);}
+ function result(rec,text){rec.onresult({results:[phrase(text)]});}
  return{api,root,status,button,instances,agree,listeners,spoken,synth,result,consent,doc};
 }
 test('no microphone is started before explicit consent',()=>{
@@ -70,4 +76,62 @@ test('repeated final recognition cannot toggle a choice off',()=>{
  const s=setup();let clicks=0;
  s.root.querySelectorAll=()=>[{querySelector(){return{textContent:'건강'};},click(){clicks++;}}];
  s.consent();const rec=s.instances[0];s.result(rec,'건강');s.result(rec,'건강');assert.equal(clicks,1);
+});
+test('a browser end after a pause restarts listening and the next phrase follows the first once',()=>{
+ const s=setup();const target=textarea('기존 이야기');const rec=s.consent(target);assert.equal(rec.continuous,true);
+ rec.onresult({results:[phrase('택시비가',false)]});
+ rec.onresult({results:[phrase('택시비가 부담돼요'),phrase('병원이',false)]});
+ rec.onresult({results:[phrase('택시비가 부담돼요'),phrase('병원이 멀어요')]});
+ mock.timers.tick(s.api.SILENCE_MS-1);rec.end();
+ assert.equal(rec.starts,2);assert.equal(s.button.attrs['aria-pressed'],'true');
+ rec.onresult({results:[phrase('버스가 없어요')]});
+ assert.equal(target.value,'기존 이야기 택시비가 부담돼요 병원이 멀어요 버스가 없어요');
+});
+test('silence after the last recognized words ends listening and returns the button to idle',()=>{
+ const s=setup();const target=textarea('');const rec=s.consent(target);
+ s.result(rec,'택시비가 부담돼요');
+ mock.timers.tick(s.api.SILENCE_MS-1);rec.onresult({results:[phrase('택시비가 부담돼요'),phrase('병원',false)]});
+ mock.timers.tick(s.api.SILENCE_MS-1);assert.equal(s.button.attrs['aria-pressed'],'true');
+ mock.timers.tick(1);
+ assert.equal(rec.aborted,true);assert.equal(rec.starts,1);
+ assert.equal(s.button.attrs['aria-pressed'],'false');assert.equal(s.button.textContent,'말로 답하기');
+ assert.equal(s.status.textContent,'말씀이 끝난 것 같아 듣기를 멈췄어요. 들은 내용을 확인해 주세요.');
+ assert.equal(target.value,'택시비가 부담돼요');
+});
+test('stopping by hand prevents any restart',()=>{
+ const s=setup();const target=textarea('');const rec=s.consent(target);
+ s.result(rec,'택시비가 부담돼요');
+ s.api.listen(s.root,target,s.button);rec.end();mock.timers.tick(s.api.FIRST_WORDS_MS);
+ assert.equal(rec.starts,1);assert.equal(s.button.attrs['aria-pressed'],'false');assert.equal(s.status.textContent,'음성 입력을 멈췄어요.');
+});
+test('a choice question and the age field still stop after one accepted answer',()=>{
+ const s=setup();let clicks=0;
+ s.root.querySelectorAll=()=>[{querySelector(){return{textContent:'청양읍'};},click(){clicks++;}}];
+ const rec=s.consent();s.result(rec,'청양읍');rec.end();
+ assert.equal(clicks,1);assert.equal(rec.starts,1);assert.equal(s.button.attrs['aria-pressed'],'false');assert.match(s.status.textContent,/선택했어요/);
+ const a=setup();const age={...textarea(''),type:'number',maxLength:-1};const ageRec=a.consent(age);
+ a.result(ageRec,'65세');ageRec.end();
+ assert.equal(age.value,'65');assert.equal(ageRec.starts,1);assert.equal(a.button.attrs['aria-pressed'],'false');
+});
+test('a choice retried after a mismatch is judged on the new words alone',()=>{
+ const s=setup();let clicks=0;
+ s.root.querySelectorAll=()=>[{querySelector(){return{textContent:'청양읍'};},click(){clicks++;}}];
+ const rec=s.consent();s.result(rec,'서울');
+ assert.equal(clicks,0);assert.equal(s.button.attrs['aria-pressed'],'true');
+ rec.end();
+ assert.equal(rec.starts,2);assert.match(s.status.textContent,/정확히 맞지 않아요/);
+ rec.onresult({results:[phrase('청양읍')]});
+ assert.equal(clicks,1);assert.equal(s.button.attrs['aria-pressed'],'false');
+ const t=setup();const missed=t.consent();t.result(missed,'서울');missed.end();mock.timers.tick(t.api.SILENCE_MS);
+ assert.equal(t.button.attrs['aria-pressed'],'false');assert.match(t.status.textContent,/정확히 맞지 않아요/);
+});
+test('no-speech inside the first-words window restarts, not-allowed does not',()=>{
+ const s=setup();const rec=s.consent(textarea(''));
+ mock.timers.tick(s.api.FIRST_WORDS_MS-1);rec.onerror({error:'no-speech'});rec.end();
+ assert.equal(rec.starts,2);assert.equal(s.button.attrs['aria-pressed'],'true');assert.match(s.status.textContent,/듣고 있어요/);
+ mock.timers.tick(1);
+ assert.equal(s.button.attrs['aria-pressed'],'false');assert.equal(s.status.textContent,'인식된 말이 없어요. 다시 말하거나 직접 입력해 주세요.');
+ const d=setup();const denied=d.consent(textarea(''));
+ denied.onerror({error:'not-allowed'});denied.end();
+ assert.equal(denied.starts,1);assert.equal(d.button.attrs['aria-pressed'],'false');assert.match(d.status.textContent,/권한/);
 });
