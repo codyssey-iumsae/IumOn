@@ -37,10 +37,12 @@ try {
         Invoke-AppPython -m unittest discover -s tests -p test_repo_policy.py -v
         Invoke-AppPython -m unittest discover -s app -p test_app.py -v
         if (Get-Command node -ErrorAction SilentlyContinue) {
-            foreach ($jsFile in @('app/static/app.js', 'app/static/journey.js')) {
+            foreach ($jsFile in @('app/static/app.js', 'app/static/journey.js', 'app/static/voice.js')) {
                 & node --check $jsFile
                 if ($LASTEXITCODE -ne 0) { throw "JavaScript check failed: $jsFile" }
             }
+            & node --test tests/voice.test.cjs
+            if ($LASTEXITCODE -ne 0) { throw 'Voice tests failed.' }
         } else { Write-Host 'Node.js unavailable: JavaScript syntax is checked in CI.' }
     } else {
         $appEnv = Join-Path $repoRoot 'app/.env'
