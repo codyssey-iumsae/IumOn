@@ -1,0 +1,28 @@
+{
+  "collected_at": "2026-10-31T00:00:00Z",
+  "errors": [],
+  "sources": {
+    "gov_list": [
+      {
+        "서비스ID": "TEST-GOV",
+        "서비스명": "테스트 어르신 지원 (가상)",
+        "소관기관유형": "중앙행정기관",
+        "소관기관명": "테스트기관"
+      }
+    ],
+    "national": [
+      {
+        "servId": "TEST-NAT",
+        "servNm": "테스트 노인 건강 (가상)"
+      }
+    ],
+    "local": [
+      {
+        "servId": "TEST-LOCAL",
+        "servNm": "테스트 노인 돌봄 (가상)",
+        "sggNm": "청양군",
+        "ctpvNm": "충청남도"
+      }
+    ]
+  }
+}
