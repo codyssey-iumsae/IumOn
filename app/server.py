@@ -46,7 +46,7 @@ TOPICS=Literal['생활비','건강','돌봄','주거','일자리','이동']
 
 class Profile(BaseModel):
     model_config=ConfigDict(extra='forbid')
-    age:int=Field(ge=70,le=120)
+    age:int=Field(ge=65,le=120)
     region:Literal['청양군']='청양군'
     town:Literal['청양읍','운곡면','대치면','정산면','목면','청남면','장평면','남양면','화성면','비봉면','unknown']='unknown'
     priority:TOPICS='생활비'
@@ -106,7 +106,7 @@ QUESTION_BANK['livelihood']['hint']='기초생활수급자 중에서도 생계�
 QUESTION_BANK['mobility']['hint']='방문이 어려워도 지원 자격이나 추천 순위가 낮아지지 않아요.'
 QUESTION_BANK['digital']['hint']='가능한 신청 경로를 찾기 위한 질문이며 추천 순위에는 반영하지 않아요.'
 BASIC_QUESTIONS=[
- {'field':'age','title':'만 나이가 어떻게 되세요?','hint':'청양군 만 70세 이상 주민 본인을 위한 혜택을 찾아요.','type':'number'},
+ {'field':'age','title':'만 나이가 어떻게 되세요?','hint':'청양군 만 65세 이상 주민 본인을 위한 혜택을 찾아요.','type':'number'},
  {'field':'town','title':'청양군 어느 읍·면에 사세요?','hint':'주민등록상 거주지를 선택해 주세요.','type':'town'},
  {'field':'needs','title':'어떤 도움이 필요하세요?','hint':'여러 개를 선택할 수 있어요.','type':'multi'},
  {'field':'priority','title':'지금 가장 필요한 도움은 무엇인가요?','hint':'선택한 분야를 먼저 살펴드려요. 점수를 조절할 필요는 없어요.','type':'priority'},

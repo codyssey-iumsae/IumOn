@@ -1,4 +1,4 @@
-const CACHE='ieumon-shell-v4';
+const CACHE='ieumon-shell-v5';
 const SHELL=['/','/style.css','/app.js','/journey.js','/icon.svg','/manifest.webmanifest'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)));self.skipWaiting();});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE&&(k.startsWith('dajeong-shell-')||k.startsWith('ieumon-shell-'))).map(k=>caches.delete(k)))));self.clients.claim();});

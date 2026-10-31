@@ -32,8 +32,10 @@ def analysis(**kw):
 class GroundedTests(unittest.TestCase):
     def test_under65_rejected(self):
         with self.assertRaises(ValueError):Profile(age=64)
-    def test_under70_rejected(self):
-        with self.assertRaises(ValueError):Profile(age=69)
+    def test_age65_accepted(self):
+        self.assertEqual(Profile(age=65).age,65)
+    def test_age69_accepted(self):
+        self.assertEqual(Profile(age=69).age,69)
     def test_story_cannot_invent_evidence(self):
         with patch('journey.chat_json',return_value={'issues':[{'label':'의료비 부담','topic':'건강','evidence':'암 진단'}]}):
             self.assertEqual(understand_story('병원에 가는 택시비가 부담돼요.')['issues'],[])
