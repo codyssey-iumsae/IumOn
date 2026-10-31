@@ -1,53 +1,44 @@
 name: Repository hygiene
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: repo-hygiene-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   repository-hygiene:
     name: Repository hygiene
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
-      - name: Check tracked files
-        run: python scripts/check_repo.py
-      - name: Test repository policy
-        run: python -m unittest discover -s tests -p "test_repo_policy.py" -v
-
+      - run: python scripts/check_repo.py
+      - run: python -m unittest discover -s tests -p "test_repo_policy.py" -v
   app-tests:
     name: App tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      IUMON_DATA_DIR: ${{ runner.temp }}/iumon-test-data
+      IUMON_DATA_DIR: /tmp/iumon-test-data
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
       - run: pip install -r app/requirements.txt
-      - name: Prepare synthetic data (no API keys)
+      - name: Prepare synthetic data
         run: |
           mkdir -p "$IUMON_DATA_DIR"
           cp tests/fixtures/snapshot.json "$IUMON_DATA_DIR/snapshot.json"
