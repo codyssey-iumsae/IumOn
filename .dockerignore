@@ -1,0 +1,10 @@
+**
+!app/
+!app/**
+app/data/
+app/.env
+app/.env.*
+!app/.env.example
+app/**/__pycache__/
+app/.venv/
+app/test_app.py

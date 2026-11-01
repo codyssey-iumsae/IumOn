@@ -1,0 +1,46 @@
+name: iumon
+services:
+  app:
+    build: .
+    image: iumon:local
+    restart: unless-stopped
+    env_file:
+      - path: ${IUMON_ENV_FILE:-../iumon-secrets/app.env}
+        format: raw
+    environment:
+      APP_ENV_FILE: /run/unused.env
+      IUMON_DATA_DIR: /srv/app/data
+      TZ: Asia/Seoul
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ${IUMON_DATA_DIR_HOST:-../iumon-data}:/srv/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: [demo]
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", "http://app:8765"]
+    depends_on:
+      app:
+        condition: service_healthy
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
