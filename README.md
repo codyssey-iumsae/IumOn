@@ -112,30 +112,39 @@ python app/server.py
 
 ## Docker 배포 (공개 시연)
 
-공개 시연은 일반 서버(GPU 미사용)에서 Docker Compose로 운영합니다. 2026-10-31 배포 기준입니다. Dockerfile·Compose 파일은 아직 이 저장소에 반영되지 않았고 서버 소스 폴더에 있습니다.
+`main`에 변경을 반영하고 GitHub Actions의 **Repository hygiene** 워크플로가 성공하면, 서버의 `iumon-deploy.timer`가 약 2분마다 확인하여 검사한 커밋 SHA를 배포합니다. 앱 테스트·저장소 검사·Docker smoke test가 모두 통과해야 합니다. 작업 브랜치에 푸시하거나 PR 검사만 통과한 상태에서는 배포하지 않습니다.
+
+서버는 사설망에 있으므로 서버에서 GitHub로 나가는 HTTPS 통신을 사용합니다. 최초 설치와 복구 절차는 [자동 배포 안내](docs/automatic-deployment.md)를 참고합니다. 배포 스크립트는 앱만 빌드·교체하며, 상태 확인 실패 시 이전 이미지와 소스 checkout으로 복구를 시도합니다. 앱 교체 중 짧은 접속 중단은 생길 수 있습니다.
+
+공개 시연은 일반 서버(GPU 미사용)에서 Docker Compose로 운영합니다. 아래 검증 기록은 2026-10-31 배포 기준입니다. Dockerfile·Compose 파일은 서버의 운영 설정을 저장소에 반영했습니다. 경로는 2026-11-01 서버 확인 결과로 수정했습니다.
 
 | 항목 | 내용 |
 | --- | --- |
 | 구성 | iumon-app-1(이음온 서버), iumon-tunnel-1(Cloudflare Quick Tunnel) |
 | 버전 | Docker Engine 29.9.2, Compose v5.6.1 |
 | 앱 포트 | 서버 127.0.0.1:8765, 외부 접속은 터널로만 |
-| 소스 | /home/ncloud/iumon |
-| 데이터 | /home/ncloud/iumon-data (정책 JSON·SQLite, 컨테이너 재시작 후 보존) |
-| 설정 | /home/ncloud/iumon-secrets/app.env (서버 전용, 저장소·이미지에 넣지 않음) |
+| 소스 | /home1/ncloud/iumon |
+| 데이터 | /home1/ncloud/iumon-data (정책 JSON·SQLite, 컨테이너 재시작 후 보존) |
+| 설정 | /home1/ncloud/iumon-secrets/app.env (서버 전용, 저장소·이미지에 넣지 않음) |
 
-운영 명령은 서버에 SSH로 접속해 실행합니다.
+운영 상태는 VPN 연결 후 서버에 SSH로 접속해 확인합니다.
 
 ~~~sh
-cd /home/ncloud/iumon
+cd /home1/ncloud/iumon
 sudo docker compose ps
 sudo docker compose logs --tail 100 app
 sudo docker compose logs --tail 100 tunnel
-sudo docker compose --profile demo up -d --build
+systemctl list-timers iumon-deploy.timer
+sudo journalctl -u iumon-deploy.service -n 100 --no-pager
+# 마지막으로 배포에 성공한 Git 커밋 SHA
+cat /home1/ncloud/iumon-deployed-sha
 ~~~
+
+첫 자동 배포가 성공하기 전에는 SHA 기록 파일이 없습니다. 평소 코드 갱신은 `main` 반영으로 진행하며, 자동 배포 후 서버 소스는 detached HEAD이므로 서버에서 `git pull`로 갱신하지 않습니다. 자동 배포를 멈추려면 `sudo systemctl stop iumon-deploy.timer`, 다시 켜려면 `sudo systemctl start iumon-deploy.timer`를 실행합니다. 앱 설정 파일만 바꾼 경우에는 서버에서 `sudo docker compose --profile demo up -d --no-deps --force-recreate app`으로 앱을 다시 생성합니다.
 
 시연 주소는 터널 로그에 나오는 trycloudflare.com 주소입니다. 터널을 다시 만들면 주소가 바뀌므로 바뀐 주소는 터널 로그에서 확인합니다. 앱만 재시작할 때는 tunnel을 다시 만들지 않아도 됩니다. 앱 컨테이너는 healthcheck와 Docker 자동 시작을 사용합니다.
 
-배포할 때 다음을 확인했습니다.
+2026-10-31 수동 배포 시 다음을 확인했습니다. 아래 정책 자료 개수와 실제 LLM·외부 HTTPS 검증은 해당 시점 기록이며, 자동 배포마다 수행하는 검사는 아닙니다.
 
 - 이미지 빌드와 Compose 설정 검증이 성공했습니다.
 - 외부 HTTPS로 홈·음성 JS·PWA manifest·상태 API가 정상 응답했습니다.
