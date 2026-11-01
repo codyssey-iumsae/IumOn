@@ -501,6 +501,10 @@ class SearchTermTests(unittest.TestCase):
         user={**PROFILE,'focus_summary':['귀가 안 들려 대화가 어려워요'],'search_terms':[]}
         self.assertNotEqual(relevance(policy(title='과수고품질시설현대화',summary='',target='',benefit='',topics=['기타']),user),0)
         self.assertEqual(relevance(policy(title='어르신 대화 상대 서비스',summary='',target='',benefit=''),user),0)
+    def test_spaced_search_term_stays_whole(self):
+        user={**PROFILE,'priority':'돌봄','needs':['돌봄'],'focus_summary':['끼니 챙기기 힘들어요'],'search_terms':['결식 예방','도시락 지원']}
+        self.assertEqual(relevance(policy(title='구제역 예방접종 지원',summary='',target='',benefit='',topics=['기타']),user),4)
+        self.assertEqual(relevance(policy(title='어르신 도시락 배달',summary='',target='',benefit=''),user),0)
     def test_pairs_do_not_span_words(self):
         user={**PROFILE,'focus_summary':['자꾸 잊어버려요'],'search_terms':['인지지원']}
         self.assertNotEqual(relevance(policy(title='체육인 복지 지원',summary='',target='',benefit='',topics=['기타']),user),0)

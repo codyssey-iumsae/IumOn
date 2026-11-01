@@ -173,12 +173,15 @@ STOP_BIGRAMS=frozenset('지원 사업 서비 비스 대상 어르 르신 노인 
                        '아파 해요 어요 아요 워요 돼요 세요 가요 데요 는데 하고 해서 있어 없어 싶어 같아 요해 담돼'.split())
 
 @lru_cache(maxsize=64)
-def query_words(query):
-    """Each story word and search term as its own set of character pairs (common pairs removed).
-    Matching per word keeps one shared fragment, such as 에너지 inside 에너지바우처, from counting as a hit."""
+def query_words(query,terms=()):
+    """Each story word and each search term as its own set of character pairs (common pairs removed).
+    Matching per word keeps one shared fragment, such as 에너지 inside 에너지바우처, from counting as a hit.
+    A search term stays whole even when the LLM writes it with a space (결식 예방 -> 결식예방), so 예방
+    alone never matches 구제역 예방접종."""
     out=[]
     # A trailing particle is dropped so that 병원에 counts as one word (병원), not two pairs.
-    for w in re.findall(r'[가-힣a-z0-9]+',query.lower()):
+    words=re.findall(r'[가-힣a-z0-9]+',query.lower())+[''.join(re.findall(r'[가-힣a-z0-9]+',t.lower())) for t in terms]
+    for w in filter(None,words):
         w=re.sub(r'(?<=..)[이가을를은는에의도와과로]$','',w)
         grams=frozenset(w[i:i+2] for i in range(len(w)-1))-STOP_BIGRAMS
         if grams and grams not in [g for _,g in out]:out.append((w,grams))
@@ -195,10 +198,12 @@ def match(p,profile):
     # Lexical match over the story plus LLM search terms. Optional remote GPU embeddings expand the
     # candidate pool in retrieve(); these evidence/eligibility ranking rules remain unchanged.
     # search_terms are policy words the LLM derived from the consented story (e.g. 비가 새요 -> 주택개보수).
-    query=' '.join([*(profile.get('focus_summary') or profile.get('story_summary') or []),*profile.get('search_terms',[])])
+    story=' '.join(profile.get('focus_summary') or profile.get('story_summary') or [])
+    terms=tuple(profile.get('search_terms',[]))
+    query=' '.join([story,*terms])
     body=' '.join(p.get(f) or '' for f in ('summary','target','benefit'))
     words=[w for triggers,policy_words in SYNONYMS if any(t in query for t in triggers) for w in policy_words]
-    found=query_words(query);units=[g for _,g in found];title,plain=text_grams(p['title']),text_grams(body)
+    found=query_words(story,terms);units=[g for _,g in found];title,plain=text_grams(p['title']),text_grams(body)
     title_words=re.findall(r'[가-힣a-z0-9]+',p['title'].lower())
     # A word is present when all its character pairs appear (one may be missing in words of 4+ pairs).
     # A single-pair word such as 대화 must start a title word (not 현대화) and never counts in long texts.
