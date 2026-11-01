@@ -36,6 +36,7 @@ class AudienceTests(unittest.TestCase):
 
     def test_school_venue_or_job_does_not_remove_senior_program(self):
         for title,target in [('어르신 급식 지원','65세 이상 노인'),('학교급식 조리원 일자리','급식 종사자'),
+                             ('초중고 교원연수','교원'),
                              ('무료 식사 지원','주민센터 방문자')]:
             p=policy(title=title,target=target,criteria='',summary='초등학교에서 진행')
             self.assertIsNone(audience_exclusion(p,PROFILE))

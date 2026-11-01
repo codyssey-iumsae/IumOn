@@ -201,7 +201,7 @@ SCHOOL_AUDIENCE=re.compile(r'초[·ㆍ･,\s]*중[·ㆍ･,\s]*고|초등학생|
 ADULT_EDUCATION=re.compile(r'방송통신|평생교육|성인|만학|학력인정|검정고시|어르신|노인|고령|조부모|조손|'
                           r'(?<!\d)(?:6\d|[7-9]\d|1[01]\d|120)\s*세')
 SCHOOL_WORKER=re.compile(r'급식.*(?:종사|조리|일자리|근로)|(?:종사|조리|일자리|근로).*급식')
-OTHER_RECIPIENT=re.compile(r'학부모|보호자|교직원|교사|조리원|종사자|대학|일반인|누구나|가족')
+OTHER_RECIPIENT=re.compile(r'학부모|보호자|교직원|교원|교사|조리원|종사자|대학|일반인|누구나|가족')
 
 def audience_exclusion(policy,profile):
     """Conservative pre-retrieval guard for school-pupil-only benefits in a senior's own search."""
