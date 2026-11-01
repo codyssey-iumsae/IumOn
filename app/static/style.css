@@ -11,6 +11,10 @@
 main:focus{outline:none}
 .brand{display:block}.brand-logo{display:block;width:100%;max-width:212px;height:auto}
 @media(max-width:1100px){.brand-logo{max-width:180px}}
+.brand-loader{width:78px;height:78px;margin:0 auto 22px;display:block;animation:iumon-pulse 1.5s ease-in-out infinite}
+@keyframes iumon-pulse{0%,100%{transform:scale(.88);opacity:.72}50%{transform:scale(1.06);opacity:1}}
+.empty::before{content:'';display:block;width:88px;height:88px;margin:0 auto 22px;background:url(/iumon-symbol.png) center/contain no-repeat;opacity:.92}
+.art-symbol{position:absolute;top:50%;left:50%;width:62%;height:62%;object-fit:contain;transform:translate(-50%,-50%);filter:drop-shadow(0 12px 28px #4966391f)}
 
 .story-input{margin-top:25px;min-height:170px;resize:vertical;font-size:18px}.issue-quote{display:block;font-size:12px;font-weight:400;color:var(--muted);margin-top:8px}.consultation-note{background:#eef4e7;padding:18px;border-radius:12px}.prep-list{padding-left:22px;font-size:15px}.prep-list li{margin-bottom:12px}
 
