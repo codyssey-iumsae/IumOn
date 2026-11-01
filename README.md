@@ -277,21 +277,37 @@ Quick Tunnel 주소는 고정 운영 주소가 아니며 가용성을 보장하�
 
 ~~~text
 app/
-  server.py           API·문답·추천 작업
-  journey.py          생활 이야기·질문 순서·신청 준비
-  batch.py            하루 1회 일괄 수집·상세·중복 판정·게시·사전 분석
-  db.py               SQLite 저장소(공공 원본·게시 카탈로그·분석 캐시)
+  server.py           FastAPI 앱: API·문답·추천 작업(job)·하루 1회 일괄 작업 예약
+  journey.py          생활 이야기 이해·질문 순서·신청 준비
+  batch.py            하루 1회 일괄 수집·상세·중복 판정·게시·사전 분석, 분석 현황·backfill
+  db.py               SQLite 저장소(공공 원본·게시 카탈로그·분석 캐시·분석 잠금·사용량)
   collect.py          공공 API 호출
-  analysis.py         조건 추출·원문 검증·분석 캐시
-  engine.py           검색·중복 검토·조건 판정·추천 순서
+  analysis.py         조건 추출·원문 인용 검증·분석 캐시
+  engine.py           검색·중복 검토·대상 구분·조건 판정·RANKING 추천 순서
+  embeddings.py       선택적 GPU 임베딩 결합 검색(RRF)·정책 벡터 저장
   llm.py              OpenAI 호환 LLM 연결
   config.py           환경 변수·데이터 경로
-  static/             화면·PWA
+  static/             화면(index.html·app.js·journey.js·voice.js·style.css)·PWA(manifest·sw.js·아이콘)
   test_app.py         앱 회귀 테스트
+  test_analysis_backlog.py  분석 적체·backfill·잠금 테스트
+  test_audience.py    다른 대상 사업 구분 테스트
+  test_embeddings.py  임베딩 결합 검색 테스트
+gpu/
+  server.py           사설망 BGE-M3 임베딩 서버(Bearer 인증·IP 제한)
+  iumon-embedding.service  GPU 서버 systemd 서비스
+  test_server.py      임베딩 서버 테스트
 scripts/
-  iumon.ps1           실행·갱신·사전 분석·테스트 진입점
+  iumon.ps1           Windows 실행·갱신·사전 분석·테스트 진입점
   check_repo.py       키 형식·금지 경로 검사
-tests/                저장소 검사·가상 정책 자료
+  deploy.sh           서버 앱 빌드·교체·상태 확인·복구
+  poll-deployment.py  main CI 성공 커밋 확인 후 배포 실행
+  evaluate_embeddings.py  고정 사례로 기존·결합 검색 후보 회수 비교
+deploy/               자동 배포 systemd service·timer
+docs/                 자동 배포·GPU 임베딩·정책 분석 운영 안내
+design/logo/          로고 원본·생성 스크립트
+tests/                저장소 검사·배포 스크립트·음성 기능 테스트, 가상 정책 자료(fixtures)
+Dockerfile, compose.yaml  공개 시연 컨테이너(app, tunnel)
+실행.bat, 앱 열기.url     Windows 로컬 실행·접속 바로가기
 .github/              CI·Dependabot·PR 템플릿
 ~~~
 
@@ -311,7 +327,17 @@ chore: 저장소 초기 설정 정리
 
 종류는 feat, fix, docs, refactor, test, ci, build, perf, style, chore, revert를 사용합니다. 호환성이 깨지는 변경은 feat(api)!: ...와 본문의 BREAKING CHANGE:로 설명합니다. PR에는 문제·변경 후 동작·검증 결과를 적습니다.
 
-CI는 앱 테스트 103개(회귀 96개, 임베딩 7개), 저장소 검사 테스트 5개, 음성 기능 테스트 16개와 JavaScript 문법을 검사합니다. 음성 테스트는 인식·합성 API를 모의하여 동의·중단·오류·화면 이동을 확인합니다. 실제 기기의 마이크 인식률·음질이나 API·LLM 정확성, 고령자 현장 사용성을 보장하는 검사는 아닙니다.
+CI(GitHub Actions **Repository hygiene**)는 PR과 main·feat/·fix/·docs/·chore/ 브랜치 push에서 실행하며 다음을 검사합니다. 앱 테스트 120개(회귀 97개, 분석 적체 9개, 대상 구분 7개, 임베딩 7개), GPU 임베딩 서버 테스트 5개, 저장소 검사 테스트 5개, 배포 스크립트 테스트 4개(bash 문법·shellcheck 포함), 음성 기능 테스트 16개, JavaScript 문법, Docker 이미지 빌드와 키 없는 상태의 HTTP smoke test. 음성 테스트는 인식·합성 API를 모의하여 동의·중단·오류·화면 이동을 확인합니다. 실제 기기의 마이크 인식률·음질이나 API·LLM 정확성, 고령자 현장 사용성을 보장하는 검사는 아닙니다.
+
+로컬에서 같은 테스트를 실행하려면 가상 자료 폴더를 지정합니다. `iumon.ps1 test`는 저장소 검사·test_app.py·음성 테스트만 실행합니다.
+
+~~~sh
+mkdir -p /tmp/iumon-test-data && cp tests/fixtures/snapshot.json /tmp/iumon-test-data/
+IUMON_DATA_DIR=/tmp/iumon-test-data python -m unittest discover -s app -p 'test_*.py'
+python -m unittest discover -s gpu -p 'test_*.py'
+python -m unittest discover -s tests -p 'test_*.py'
+node --test tests/voice.test.cjs
+~~~
 
 ## 보안·개인정보
 
