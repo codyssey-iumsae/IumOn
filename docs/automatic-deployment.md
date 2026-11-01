@@ -23,7 +23,8 @@ cd /home1/ncloud/iumon
 git status --short
 git remote get-url origin
 # 추적 파일 수정과 운영 설정을 보존·정리한 뒤 실행
-git pull --ff-only origin main
+git fetch origin main
+git checkout --detach origin/main
 printf '%s\n' /home1/ncloud/iumon/compose.yaml > .deploy-compose-path
 sudo -n docker compose -p iumon --profile demo config --quiet
 sudo -n docker compose -p iumon ps
