@@ -333,10 +333,65 @@ def application_period(p,a,today=None):
     if app.get('state')=='always':return {'state':'always','label':'원문상 상시 접수 · 예산 확인 필요'}
     return {'state':'unknown','label':'접수기간 확인 필요'}
 
-def other_audience(analysis):
-    """Source quote when the analysis judged, with a verified quote, that a 65+ resident is not the audience."""
-    if not analysis or analysis.get('senior_possible') is not False:return None
-    return (analysis.get('audience_evidence') or {}).get('quote')
+# Source wording that names only another group; matched against the title and the 지원대상 text.
+OTHER_GROUP=re.compile(r'초등학|중학|고등학|학교|학생|청소년|청년|아동|영유아|유아|어린이|신생아|(?<!창업)보육|방과후|임산부|임신|출산|난임|산모')
+# Any wording that can include an older adult keeps the program in the main list.
+SENIOR_WORDS=re.compile(r'노인|어르신|경로|고령|65세|60세|조손|조부모|손자녀|성인|장애인|저소득|기초생활|차상위|수급|'
+                        r'가구|세대|국민|주민|누구|농업인|어업인|유공|보훈|일반인|교직원|직원|재직자|근로자|종사자|피해자|보호자|지킴이|일자리|졸업')
+
+# "18세 이상 ~ 40세 미만", "6세~18세", "만 19세 미만": the most permissive stated upper age wins.
+AGE_RANGE=re.compile(r'(\d{1,3})\s*세?\s*(?:이상)?\s*[~∼\-]\s*만?\s*(\d{1,3})\s*세\s*(미만|이하)?')
+AGE_UPPER=re.compile(r'(\d{1,3})\s*세\s*(미만|이하)(?!\s*(?:의|인)?\s*(?:자녀|아동을|손자녀|를 둔|을 둔))'
+                     r'(?!\s*(?:는|은|자는)?\s*(?:제한|제외|불가))')
+
+ADULT_WORDS=re.compile(r'노인|어르신|경로|고령|65세|60세|조손|조부모|손자녀|성인|일반인|누구|교직원|근로자|재직자|피해자|지킴이|일자리|졸업')
+# "65세 이상" with no upper end; "6세 이상 18세 미만" is a range, not open-ended.
+AGE_OPEN=re.compile(r'(\d{1,3})\s*세\s*이상(?!\s*[~∼\-])(?!\s*(?:만\s*)?\d{1,3}\s*세\s*(?:미만|이하))')
+
+def age_ceiling(text):
+    """Oldest age the text admits, or None when it states no upper age (also when any range is open-ended,
+    as in "7세 이하 및 65세 이상")."""
+    if AGE_OPEN.search(text):return None
+    uppers=[int(m.group(2))-(m.group(3)=='미만') for m in AGE_RANGE.finditer(text)]
+    uppers+=[int(m.group(1))-(m.group(2)=='미만') for m in AGE_UPPER.finditer(text)]
+    return max(uppers) if uppers else None
+
+def group_only(text):
+    """True when the text leads with another group (초등학교 4~6학년, 임산부…) and names no adult or senior."""
+    lead=len(re.match(r'[\s○●◦▶·\-*※0-9.)]*',text).group())
+    found=OTHER_GROUP.search(text)
+    return bool(found and found.start()-lead<=12 and not SENIOR_WORDS.search(text))
+
+def age_excluded(text,age):
+    """Clause that keeps this age out, or None. Every ○ group must state an upper age below it: one group
+    without a limit (만성질환자 next to 18세 미만) keeps the program. 누구나 never excludes by age."""
+    if re.search(r'누구|모든\s?국민|전\s?국민',text):return None
+    # Audience groups are ○ items or bulleted lines (-, ·, 1.); a short heading such as 지원 대상 is not one.
+    heading=re.compile(r'^[(\[]?\s*(?:지원\s*)?(?:대상|자격|연령|요건|기준|조건)\s*[)\]]?\s*:?\s*$')
+    groups=[g.strip() for g in re.split(r'○|ㅇ|●|(?:^|\n)\s*(?:-|·|∙|\d+\.)\s',text)
+            if g.strip() and not heading.match(g.strip())] or [text]
+    ceilings=[age_ceiling(g) for g in groups]
+    if all(c is not None and c<age for c in ceilings):return groups[0]
+    return None
+
+def other_audience(analysis,policy=None,age=65):
+    """Source text showing a resident of this age cannot be the audience, or None. Only the source wording
+    decides: an upper age below the resident's age in every audience group, or an audience that is only
+    another group (초등학교 4~6학년, 임산부). The analysis' own senior label is not trusted alone; its
+    audience quote is read like the source when the 지원대상 text is missing."""
+    quote=((analysis or {}).get('audience_evidence') or {}).get('quote') or ''
+    versions=policy.get('versions',[policy]) if policy else []
+    target=' ○ '.join(str(v.get('target') or '') for v in versions if v.get('target'))
+    clause=age_excluded(target or quote,age) if (target or quote) else None
+    if clause:return clause[:120].strip()
+    for text in [quote,*[str(v.get('target') or '')[:150] for v in versions]]:
+        if text and group_only(text):return text[:120].strip()
+    # A title naming another group (학교급식비) decides unless the title or 지원대상 clearly names an adult;
+    # broad words such as 저소득 often describe the student's household, so they do not count here.
+    title=' '.join(str(v.get('title') or '') for v in versions)
+    if title and OTHER_GROUP.search(title) and not ADULT_WORDS.search(title+' '+target[:300]):
+        return title[:120].strip()
+    return None
 
 def assess(p,profile,analysis=None):
     p=copy.deepcopy(p)
@@ -383,7 +438,7 @@ def assess(p,profile,analysis=None):
     if period['state']=='closed':group='excluded'
     # The analysis quoted the source to say the program is for someone else (e.g. 고등학생, 영유아). That is
     # moved out of the main list with the quote shown, never hidden; eligibility itself stays as evaluated.
-    audience=other_audience(a)
+    audience=other_audience(a,p,profile.get('age') or 65)
     if audience:group='excluded'
     if profile.get('pension')=='yes' and re.fullmatch(r'기초연금(?:지급|지원|지원사업)?',norm(p['title'])):
         group='receiving'

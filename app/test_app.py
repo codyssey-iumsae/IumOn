@@ -458,6 +458,45 @@ class SearchTermTests(unittest.TestCase):
         issues=[{'label':'집이 낡았어요','topic':'주거','terms':['주택개보수']},{'label':'끼니','topic':'돌봄','terms':['도시락','<x>']}]
         self.assertEqual(intake_plan(issues,'1',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['도시락'])
         self.assertEqual(intake_plan(issues,'all',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['주택개보수','도시락'])
+    def test_source_wording_for_children_only_leaves_main_list(self):
+        kids=policy(title='방과후아카데미 돌봄',target='초등학교 4~6학년, 중학교 1~3학년')
+        r=assess(kids,PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))
+        self.assertEqual((r['group'],r['audience_state']),('excluded','other'))
+        self.assertIn('초등학교',r['reasons'][0])
+        grand=policy(title='조손가정 아동 양육 지원',target='조부모가 손자녀를 양육하는 가정')
+        self.assertEqual(assess(grand,PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))['audience_state'],'fits')
+        self.assertEqual(assess(policy(),PROFILE,analysis())['audience_state'],'fits')
+        for title,target in (('치료회복 프로그램','가정폭력 피해 여성과 그 동반 아동'),('퇴임대비 연수','사립학교 퇴직예정 교직원'),
+                             ('해양문화행사','초, 중, 고등학생 및 대학생, 일반인'),('아동안전지킴이',''),
+                             ('방송통신중학교','초등학교 졸업자 및 이와 동등 이상의 학력을 인정받은 자')):
+            r=assess(policy(title=title,target=target),PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))
+            self.assertEqual(r['audience_state'],'fits',title)
+        mixed=policy(title='보조기기 지원',target='등록 장애인 및 장애아동')
+        self.assertEqual(assess(mixed,PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))['audience_state'],'fits')
+    def test_ai_audience_label_alone_does_not_exclude(self):
+        for quote in ('만20세 이상인 자로서 정기소득이 없는 자','15세~69세 구직자 중 중위소득 60% 이하','기준중위소득 125% 이하 등록장애인'):
+            a=analysis(senior_possible=False,audience_evidence=evidence(quote=quote),complete=False)
+            self.assertEqual(assess(policy(target=quote),{**PROFILE,'age':65},a)['audience_state'],'fits',quote)
+    def test_stated_upper_age_below_resident_excludes(self):
+        for quote in ('18세 이상 ~ 만65세 미만의 등록 장애인','만 19세 미만 아동','6세 이상 18세 미만'):
+            a=analysis(senior_possible=None,audience_evidence=None,complete=False)
+            r=assess(policy(title='활동 지원',target=quote),{**PROFILE,'age':65},a)
+            self.assertEqual(r['audience_state'],'other',quote)
+        a=analysis(senior_possible=None,audience_evidence=None,complete=False)
+        self.assertEqual(assess(policy(title='상해보험',target='만15~65세 기초생활수급자'),{**PROFILE,'age':65},a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='상해보험',target='만15~65세 기초생활수급자'),{**PROFILE,'age':70},a)['audience_state'],'other')
+        self.assertEqual(assess(policy(title='양육비',target='만 18세 미만 자녀를 둔 가구'),PROFILE,a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='관람료 면제',target='7세 이하 및 65세 이상인 자'),PROFILE,a)['audience_state'],'fits')
+        for title,target in (('본인부담 경감','○ 희귀질환자 ○ 만성질환자 ○ 18세 미만인 자'),('내일배움카드','○ 국민 누구나 ○ 지원 제외 ④ 근로자(만 45세 미만)'),
+                             ('체험관','누구나(단, 5세 이하는 제한)'),('장애인 의료비','○ 의료급여 2종 등록장애인 ○ 차상위 등록장애인(만성질환자 및 18세 미만 등록장애인)')):
+            self.assertEqual(assess(policy(title=title,target=target),{**PROFILE,'age':65},a)['audience_state'],'fits',title)
+        self.assertEqual(assess(policy(title='본인부담 면제',target='의료급여 수급권자 중 면제 대상자\n - 1종 수급권자 중 당연 적용\n - 18세 미만인 자'),
+                                {**PROFILE,'age':65},a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='장애인 창업보육실 운영',target=''),PROFILE,a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='활동지원',target='○ 만6세∼만65세 미만 등록 장애인 중 활동지원등급 판정을 받은 자'),
+                                {**PROFILE,'age':65},a)['audience_state'],'other')
+        lunch=policy(title='학교급식비 지원',target='저소득층 수급 자격자(기초, 차상위)인 학생')
+        self.assertEqual(assess(lunch,PROFILE,a)['audience_state'],'other')
     def test_short_word_must_start_a_title_word(self):
         user={**PROFILE,'focus_summary':['귀가 안 들려 대화가 어려워요'],'search_terms':[]}
         self.assertNotEqual(relevance(policy(title='과수고품질시설현대화',summary='',target='',benefit='',topics=['기타']),user),0)
