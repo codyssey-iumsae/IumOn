@@ -101,6 +101,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/iumon.ps1 start
 | LOCAL_DETAIL_DAILY_BUDGET | 지자체 상세 호출 일일 예산, 기본 90 |
 | APP_ENV_FILE | 별도 설정 파일 |
 | IUMON_DATA_DIR | 데이터 폴더, 기본 app/data |
+| EMBEDDING_URL | 선택. 사설망 GPU 임베딩 서버 주소(예: http://10.1.2.25:8790), 비우면 기존 검색만 사용 |
+| EMBEDDING_API_KEY | 선택. GPU 임베딩 서버와 같은 Bearer 키 |
+| EMBEDDING_MODEL | 선택. 모델 identity, 예: BAAI/bge-m3@<revision>:dense:2048. 세 값이 모두 있어야 결합 검색 사용 |
+| APP_HOST / PORT | `python app/server.py` 직접 실행 시 바인딩 주소·포트, 기본 127.0.0.1 / 8765 |
 
 ### 관리 명령
 
@@ -131,7 +135,40 @@ python app/server.py
 python app/batch.py --llm-limit 100
 # 호출 없이 분석 대기 수·중복 후보 수만 확인
 python app/batch.py --dry-run
+# 게시 정책의 분석 완료율·실패 수·토큰 사용량 확인 (LLM 미사용)
+python app/batch.py --analysis-status
+# 수집·중복 판정 없이 미분석 정책 전체 분석 (중단 후 같은 명령으로 재개)
+python app/batch.py --backfill --workers 2
 ~~~
+
+| batch.py 옵션 | 설명 |
+| --- | --- |
+| `--stages` | 실행 단계 선택(collect, details, publish, analyze 중 쉼표 구분, AI 중복 판정은 analyze를 포함할 때만), 기본 전체 |
+| `--llm-limit` | 정책 분석 상한, 0은 전체. 기본은 BATCH_LLM_LIMIT 값(all이면 전체, 없거나 0이면 100) |
+| `--dedup-limit` | 새 중복 판정 상한, 기본 BATCH_DEDUP_LIMIT |
+| `--workers` | 분석 동시 작업 수, 기본 4 |
+| `--dry-run` | 외부 호출 없이 대기 수만 출력 |
+| `--analysis-status` | 분석 현황만 출력 |
+| `--backfill` | 미분석 정책 전체 분석, 미완료가 남으면 종료 코드 2 |
+| `--retry-failed` | 현재 미분석 정책의 실패 재시도 보류 해제 |
+
+자세한 운영 방법은 [원문 분석 초기 적체 해소와 운영](docs/policy-analysis.md)을 참고합니다.
+
+### API
+
+화면(app/static)이 사용하는 서버 API입니다. POST·DELETE는 같은 출처(Origin) 요청만 받고 본문은 20KB까지입니다.
+
+| 메서드·경로 | 역할 |
+| --- | --- |
+| GET /api/health | 상태 확인(Docker healthcheck) |
+| GET /api/status | 버전·LLM 연결·수집 현황·기본 질문·읍면 목록 |
+| POST /api/story | 생활 이야기 → 어려움·정책 검색어 정리(AI 전송 동의 필요) |
+| POST /api/intake-plan | 선택한 어려움에 맞는 질문 순서 |
+| POST /api/parse | 자유 답변을 선택지 하나로 분류(동의 필요, 결과는 사용자 확인) |
+| POST /api/recommend | 추천 작업 시작(202, job_id 반환). 동시 진행 3개까지 |
+| GET·DELETE /api/jobs/{job_id} | 추천 진행 상황·결과 조회, 삭제. 15분 뒤 자동 만료 |
+| POST /api/prepare | 고른 정책의 신청 경로·공식 서류·문의처·확인 질문·전달문 |
+| POST /api/saved | 기기에 저장한 정책 ID로 정책 정보 다시 조회 |
 
 ## Docker 배포 (공개 시연)
 
