@@ -4,6 +4,19 @@
 
 대상은 **충남 청양군 만 65세 이상 주민**입니다. 현재 음성 입력·읽어주기를 지원하는 PWA이며 네이티브 앱 패키징은 후속 단계입니다.
 
+## 배포 주소
+
+**https://accurately-because-paintings-influenced.trycloudflare.com/**
+
+| 항목 | 내용 |
+| --- | --- |
+| 화면 | 위 주소 접속 (휴대폰·PC 브라우저, PWA 설치 가능) |
+| 상태 확인 | [/api/health](https://accurately-because-paintings-influenced.trycloudflare.com/api/health) → `{"status":"ok"}` |
+| 자료 현황 | [/api/status](https://accurately-because-paintings-influenced.trycloudflare.com/api/status) → 버전·LLM 연결 여부·수집 시각·자료 개수 |
+| 확인 시점 | 2026-11-01: 버전 0.4.0, LLM 연결됨(gpt-5.4-mini), 정부24 10,942개·중앙부처 461개·충남 지자체 337개 수집, 추천 후보 1,338개 게시 |
+
+Cloudflare **Quick Tunnel** 주소이므로 서버에서 tunnel 컨테이너를 다시 만들면 주소가 바뀝니다. 접속이 안 되면 서버의 터널 로그에서 새 주소를 확인하고 이 절을 갱신합니다([Docker 배포](#docker-배포-공개-시연) 참고). 시연용 주소이며 고정 운영 주소나 가용성을 보장하지 않습니다.
+
 ## 서비스 흐름
 
 생활 이야기 → 어려움 확인 → 필요한 도움 선택 → 관련 상황 질문 → 나이·거주 읍면 → 정책별 추가 질문 → 정책 후보·원문 설명 → 상담·신청 준비.
@@ -23,29 +36,31 @@
 | 검색 | 글자 겹침·동의어 표 + LLM 정책 검색어. 선택적으로 사설망 GPU BGE-M3 벡터 검색 결합 |
 | 검증·협업 | unittest, JavaScript 문법 검사, GitHub Actions, Dependabot |
 | 실행 | PowerShell 통합 스크립트, Windows 배치 파일 |
-| 시연 배포 | Docker Compose, Cloudflare Quick Tunnel |
+| 시연 배포 | Docker Compose, Cloudflare Quick Tunnel, systemd timer 자동 배포 |
+| GPU 임베딩(선택) | 별도 GPU 서버의 FastAPI + sentence-transformers BGE-M3 (`gpu/`) |
 
 소형모델은 아직 학습하지 않았으며 조건 추출·중복 비교·맞춤 설명 역할을 LLM이 대신합니다.
 
 ## 웹 사용 방법
 
-1. 아래 서버 실행 절차를 완료합니다. 이후 PC에서는 **실행.bat**으로 서버를 켤 수 있습니다.
-2. 같은 PC 브라우저에서 http://127.0.0.1:8765 에 접속합니다. 공개 시연 주소는 아래 Docker 배포 절을 참고합니다.
-3. AI 전송 동의를 확인하고 생활 이야기를 입력합니다. 이해한 어려움을 확인하고 필요한 도움을 선택합니다.
-4. 질문에 답하고 후보의 조건·혜택·공식 출처를 확인합니다. 모르는 답은 건너뜁니다.
+1. 브라우저에서 배포 주소 https://accurately-because-paintings-influenced.trycloudflare.com/ 에 접속합니다. 설치나 로그인은 필요 없습니다.
+   - 직접 서버를 띄워 쓰려면 아래 서버 실행 절차를 완료한 뒤 같은 PC에서 http://127.0.0.1:8765 에 접속합니다. Windows에서는 이후 **실행.bat**으로 서버를 켜고 **앱 열기.url**로 화면을 엽니다.
+2. 생활 이야기로 시작하려면 AI 전송 동의를 확인하고 이야기를 입력합니다. 이해한 어려움을 확인하고 필요한 도움을 선택합니다. AI에 보내고 싶지 않으면 선택 질문으로 시작합니다.
+3. 나이·거주 읍·면과 관련 상황 질문에 답합니다.
+4. 정책별 추가 질문에 답하고 후보의 조건·혜택·공식 출처를 확인합니다. 모르는 답은 ‘잘 모르겠어요’로 남깁니다. 결과는 ‘확인한 주요 조건이 맞아요·몇 가지 더 확인해요·신청에 도움이 필요해요·이미 받고 있는 혜택·현재 조건과 맞지 않아요’로 묶여 표시됩니다.
 5. 상담·신청 준비 화면에서 신청 경로·서류·문의처를 확인하고 필요하면 메모를 저장합니다.
 
-서버 창을 닫거나 Ctrl+C를 누르면 종료됩니다. 새로고침 시 답변·대화가 초기화되므로 필요한 메모는 먼저 저장하세요.
+새로고침 시 답변·대화가 초기화되므로 필요한 메모는 먼저 저장하세요. 직접 띄운 서버는 서버 창을 닫거나 Ctrl+C를 누르면 종료됩니다.
 
 ## 앱 사용 방법 (PWA)
 
-현재 APK·IPA나 앱스토어 배포판은 없습니다. **휴대폰에서 접속할 수 있는 HTTPS 주소로 배포한 뒤** 홈 화면에 설치합니다. 휴대폰의 127.0.0.1은 PC 서버를 가리키지 않습니다.
+현재 APK·IPA나 앱스토어 배포판은 없습니다. HTTPS 배포 주소 https://accurately-because-paintings-influenced.trycloudflare.com/ 에서 홈 화면에 설치합니다. 휴대폰의 127.0.0.1은 PC 서버를 가리키지 않으므로 휴대폰에서는 배포 주소를 사용합니다.
 
 - Android: Chrome에서 배포 주소 접속 → 메뉴 → 앱 설치/홈 화면에 추가 → 이음온 아이콘 실행.
 - iPhone: Safari에서 배포 주소 접속 → 공유 → 홈 화면에 추가 → 이음온 아이콘 실행.
-- PC: 지원 브라우저에서 배포 주소 접속 → 주소창/메뉴의 설치 기능 사용.
+- PC: Chrome·Edge에서 배포 주소 접속 → 주소창/메뉴의 설치 기능 사용.
 
-메뉴·지원 여부는 브라우저마다 다릅니다. 설치 후 문답·정책 확인·신청 준비는 웹과 같습니다. 글자·음성 입력과 선택 버튼을 함께 사용할 수 있습니다. 정책 조회·AI 분석에는 인터넷과 실행 중인 서버가 필요하며 설치만으로 오프라인 추천이 되지는 않습니다.
+Quick Tunnel 주소가 바뀌면 설치한 아이콘은 이전 주소를 열어 동작하지 않습니다. 이때는 새 배포 주소에서 다시 설치합니다. 메뉴·지원 여부는 브라우저마다 다릅니다. 설치 후 문답·정책 확인·신청 준비는 웹과 같습니다. 글자·음성 입력과 선택 버튼을 함께 사용할 수 있습니다. 정책 조회·AI 분석에는 인터넷과 실행 중인 서버가 필요하며 설치만으로 오프라인 추천이 되지는 않습니다.
 
 ## 음성으로 사용하기
 
@@ -86,6 +101,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/iumon.ps1 start
 | LOCAL_DETAIL_DAILY_BUDGET | 지자체 상세 호출 일일 예산, 기본 90 |
 | APP_ENV_FILE | 별도 설정 파일 |
 | IUMON_DATA_DIR | 데이터 폴더, 기본 app/data |
+| EMBEDDING_URL | 선택. 사설망 GPU 임베딩 서버 주소(예: http://10.1.2.25:8790), 비우면 기존 검색만 사용 |
+| EMBEDDING_API_KEY | 선택. GPU 임베딩 서버와 같은 Bearer 키 |
+| EMBEDDING_MODEL | 선택. 모델 identity, 예: BAAI/bge-m3@<revision>:dense:2048. 세 값이 모두 있어야 결합 검색 사용 |
+| APP_HOST / PORT | `python app/server.py` 직접 실행 시 바인딩 주소·포트, 기본 127.0.0.1 / 8765 |
 
 ### 관리 명령
 
@@ -116,7 +135,40 @@ python app/server.py
 python app/batch.py --llm-limit 100
 # 호출 없이 분석 대기 수·중복 후보 수만 확인
 python app/batch.py --dry-run
+# 게시 정책의 분석 완료율·실패 수·토큰 사용량 확인 (LLM 미사용)
+python app/batch.py --analysis-status
+# 수집·중복 판정 없이 미분석 정책 전체 분석 (중단 후 같은 명령으로 재개)
+python app/batch.py --backfill --workers 2
 ~~~
+
+| batch.py 옵션 | 설명 |
+| --- | --- |
+| `--stages` | 실행 단계 선택(collect, details, publish, analyze 중 쉼표 구분, AI 중복 판정은 analyze를 포함할 때만), 기본 전체 |
+| `--llm-limit` | 정책 분석 상한, 0은 전체. 기본은 BATCH_LLM_LIMIT 값(all이면 전체, 없거나 0이면 100) |
+| `--dedup-limit` | 새 중복 판정 상한, 기본 BATCH_DEDUP_LIMIT |
+| `--workers` | 분석 동시 작업 수, 기본 4 |
+| `--dry-run` | 외부 호출 없이 대기 수만 출력 |
+| `--analysis-status` | 분석 현황만 출력 |
+| `--backfill` | 미분석 정책 전체 분석, 미완료가 남으면 종료 코드 2 |
+| `--retry-failed` | 현재 미분석 정책의 실패 재시도 보류 해제 |
+
+자세한 운영 방법은 [원문 분석 초기 적체 해소와 운영](docs/policy-analysis.md)을 참고합니다.
+
+### API
+
+화면(app/static)이 사용하는 서버 API입니다. POST·DELETE는 같은 출처(Origin) 요청만 받고 본문은 20KB까지입니다.
+
+| 메서드·경로 | 역할 |
+| --- | --- |
+| GET /api/health | 상태 확인(Docker healthcheck) |
+| GET /api/status | 버전·LLM 연결·수집 현황·기본 질문·읍면 목록 |
+| POST /api/story | 생활 이야기 → 어려움·정책 검색어 정리(AI 전송 동의 필요) |
+| POST /api/intake-plan | 선택한 어려움에 맞는 질문 순서 |
+| POST /api/parse | 자유 답변을 선택지 하나로 분류(동의 필요, 결과는 사용자 확인) |
+| POST /api/recommend | 추천 작업 시작(202, job_id 반환). 동시 진행 3개까지 |
+| GET·DELETE /api/jobs/{job_id} | 추천 진행 상황·결과 조회, 삭제. 15분 뒤 자동 만료 |
+| POST /api/prepare | 고른 정책의 신청 경로·공식 서류·문의처·확인 질문·전달문 |
+| POST /api/saved | 기기에 저장한 정책 ID로 정책 정보 다시 조회 |
 
 ## Docker 배포 (공개 시연)
 
@@ -150,7 +202,14 @@ cat /home1/ncloud/iumon-deployed-sha
 
 첫 자동 배포가 성공하기 전에는 SHA 기록 파일이 없습니다. 평소 코드 갱신은 `main` 반영으로 진행하며, 자동 배포 후 서버 소스는 detached HEAD이므로 서버에서 `git pull`로 갱신하지 않습니다. 자동 배포를 멈추려면 `sudo systemctl stop iumon-deploy.timer`, 다시 켜려면 `sudo systemctl start iumon-deploy.timer`를 실행합니다. 앱 설정 파일만 바꾼 경우에는 서버에서 `sudo docker compose --profile demo up -d --no-deps --force-recreate app`으로 앱을 다시 생성합니다.
 
-시연 주소는 터널 로그에 나오는 trycloudflare.com 주소입니다. 터널을 다시 만들면 주소가 바뀌므로 바뀐 주소는 터널 로그에서 확인합니다. 앱만 재시작할 때는 tunnel을 다시 만들지 않아도 됩니다. 앱 컨테이너는 healthcheck와 Docker 자동 시작을 사용합니다.
+현재 시연 주소는 **https://accurately-because-paintings-influenced.trycloudflare.com/** 입니다(2026-11-01 확인). 터널을 다시 만들면 주소가 바뀌므로 바뀐 주소는 터널 로그에서 확인하고 README의 [배포 주소](#배포-주소)를 갱신합니다. 앱만 재시작·자동 배포할 때는 tunnel을 다시 만들지 않으므로 주소가 유지됩니다.
+
+~~~sh
+# 현재 Quick Tunnel 주소 확인
+sudo docker compose logs tunnel | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1
+# 외부에서 상태 확인
+curl -s https://accurately-because-paintings-influenced.trycloudflare.com/api/health
+~~~ 앱 컨테이너는 healthcheck와 Docker 자동 시작을 사용합니다.
 
 2026-10-31 수동 배포 시 다음을 확인했습니다. 아래 정책 자료 개수와 실제 LLM·외부 HTTPS 검증은 해당 시점 기록이며, 자동 배포마다 수행하는 검사는 아닙니다.
 
@@ -218,21 +277,37 @@ Quick Tunnel 주소는 고정 운영 주소가 아니며 가용성을 보장하�
 
 ~~~text
 app/
-  server.py           API·문답·추천 작업
-  journey.py          생활 이야기·질문 순서·신청 준비
-  batch.py            하루 1회 일괄 수집·상세·중복 판정·게시·사전 분석
-  db.py               SQLite 저장소(공공 원본·게시 카탈로그·분석 캐시)
+  server.py           FastAPI 앱: API·문답·추천 작업(job)·하루 1회 일괄 작업 예약
+  journey.py          생활 이야기 이해·질문 순서·신청 준비
+  batch.py            하루 1회 일괄 수집·상세·중복 판정·게시·사전 분석, 분석 현황·backfill
+  db.py               SQLite 저장소(공공 원본·게시 카탈로그·분석 캐시·분석 잠금·사용량)
   collect.py          공공 API 호출
-  analysis.py         조건 추출·원문 검증·분석 캐시
-  engine.py           검색·중복 검토·조건 판정·추천 순서
+  analysis.py         조건 추출·원문 인용 검증·분석 캐시
+  engine.py           검색·중복 검토·대상 구분·조건 판정·RANKING 추천 순서
+  embeddings.py       선택적 GPU 임베딩 결합 검색(RRF)·정책 벡터 저장
   llm.py              OpenAI 호환 LLM 연결
   config.py           환경 변수·데이터 경로
-  static/             화면·PWA
+  static/             화면(index.html·app.js·journey.js·voice.js·style.css)·PWA(manifest·sw.js·아이콘)
   test_app.py         앱 회귀 테스트
+  test_analysis_backlog.py  분석 적체·backfill·잠금 테스트
+  test_audience.py    다른 대상 사업 구분 테스트
+  test_embeddings.py  임베딩 결합 검색 테스트
+gpu/
+  server.py           사설망 BGE-M3 임베딩 서버(Bearer 인증·IP 제한)
+  iumon-embedding.service  GPU 서버 systemd 서비스
+  test_server.py      임베딩 서버 테스트
 scripts/
-  iumon.ps1           실행·갱신·사전 분석·테스트 진입점
+  iumon.ps1           Windows 실행·갱신·사전 분석·테스트 진입점
   check_repo.py       키 형식·금지 경로 검사
-tests/                저장소 검사·가상 정책 자료
+  deploy.sh           서버 앱 빌드·교체·상태 확인·복구
+  poll-deployment.py  main CI 성공 커밋 확인 후 배포 실행
+  evaluate_embeddings.py  고정 사례로 기존·결합 검색 후보 회수 비교
+deploy/               자동 배포 systemd service·timer
+docs/                 자동 배포·GPU 임베딩·정책 분석 운영 안내
+design/logo/          로고 원본·생성 스크립트
+tests/                저장소 검사·배포 스크립트·음성 기능 테스트, 가상 정책 자료(fixtures)
+Dockerfile, compose.yaml  공개 시연 컨테이너(app, tunnel)
+실행.bat, 앱 열기.url     Windows 로컬 실행·접속 바로가기
 .github/              CI·Dependabot·PR 템플릿
 ~~~
 
@@ -252,7 +327,17 @@ chore: 저장소 초기 설정 정리
 
 종류는 feat, fix, docs, refactor, test, ci, build, perf, style, chore, revert를 사용합니다. 호환성이 깨지는 변경은 feat(api)!: ...와 본문의 BREAKING CHANGE:로 설명합니다. PR에는 문제·변경 후 동작·검증 결과를 적습니다.
 
-CI는 앱 테스트 103개(회귀 96개, 임베딩 7개), 저장소 검사 테스트 5개, 음성 기능 테스트 16개와 JavaScript 문법을 검사합니다. 음성 테스트는 인식·합성 API를 모의하여 동의·중단·오류·화면 이동을 확인합니다. 실제 기기의 마이크 인식률·음질이나 API·LLM 정확성, 고령자 현장 사용성을 보장하는 검사는 아닙니다.
+CI(GitHub Actions **Repository hygiene**)는 PR과 main·feat/·fix/·docs/·chore/ 브랜치 push에서 실행하며 다음을 검사합니다. 앱 테스트 120개(회귀 97개, 분석 적체 9개, 대상 구분 7개, 임베딩 7개), GPU 임베딩 서버 테스트 5개, 저장소 검사 테스트 5개, 배포 스크립트 테스트 4개(bash 문법·shellcheck 포함), 음성 기능 테스트 16개, JavaScript 문법, Docker 이미지 빌드와 키 없는 상태의 HTTP smoke test. 음성 테스트는 인식·합성 API를 모의하여 동의·중단·오류·화면 이동을 확인합니다. 실제 기기의 마이크 인식률·음질이나 API·LLM 정확성, 고령자 현장 사용성을 보장하는 검사는 아닙니다.
+
+로컬에서 같은 테스트를 실행하려면 가상 자료 폴더를 지정합니다. `iumon.ps1 test`는 저장소 검사·test_app.py·음성 테스트만 실행합니다.
+
+~~~sh
+mkdir -p /tmp/iumon-test-data && cp tests/fixtures/snapshot.json /tmp/iumon-test-data/
+IUMON_DATA_DIR=/tmp/iumon-test-data python -m unittest discover -s app -p 'test_*.py'
+python -m unittest discover -s gpu -p 'test_*.py'
+python -m unittest discover -s tests -p 'test_*.py'
+node --test tests/voice.test.cjs
+~~~
 
 ## 보안·개인정보
 
