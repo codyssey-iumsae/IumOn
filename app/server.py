@@ -5,8 +5,7 @@ import threading
 import time
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime,timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -14,7 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from config import ROOT
 from analysis import analyze
-from engine import load_catalog,retrieve,semantic_merge,assess,finalize,personalize,next_questions,GROUPS,TOWNS
+from engine import load_catalog,retrieve,assess,finalize,personalize,next_questions,GROUPS,TOWNS
+import batch
+import db
 from llm import configured,chat_json
 from journey import understand_story,prepare,intake_plan
 
@@ -24,14 +25,12 @@ async def maintenance():
             with _job_lock:
                 for token in list(_jobs):
                     if time.monotonic()-_jobs[token]['created']>900:_jobs.pop(token,None)
-            _,meta=load_catalog()
-            stamp=meta.get('collected_at')
-            stale=not stamp or (datetime.now(timezone.utc)-datetime.fromisoformat(stamp)).total_seconds()>24*3600
-            if stale and os.getenv('DATA_GO_KR_KEY') and os.getenv('AUTO_REFRESH','1')=='1':
-                from collect import main
-                await asyncio.to_thread(main)
+            # The daily batch is a separate module (batch.py); this loop only triggers it on schedule.
+            # Recommendation requests never call public APIs and only read the published catalog.
+            if await asyncio.to_thread(batch.due):
+                await asyncio.to_thread(batch.run_scheduled)
         except Exception:
-            pass # Existing snapshot remains readable; collector records source failures.
+            pass # The published catalog stays readable; the batch records source failures.
         await asyncio.sleep(60)
 
 @asynccontextmanager
@@ -157,25 +156,15 @@ def run_recommendation(token,request):
         profile=request.profile.model_dump()
         catalog,meta=load_catalog()
         chosen=retrieve(catalog,profile)[:request.limit]
-        update_job(token,stage='정책 원문에서 조건과 혜택을 분석하고 있어요.',total=len(chosen),done=0)
-        successful={};failed=[]
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures={pool.submit(analyze,p):p for p in chosen}
-            for future in as_completed(futures):
-                p=futures[future]
-                try:successful[p['id']]=future.result()
-                except Exception:failed.append(p['id'])
-                update_job(token,done=len(successful)+len(failed))
+        update_job(token,stage='정책 원문 분석 결과를 불러오고 있어요.',total=len(chosen),done=0)
+        # Analyses and AI duplicate merges come from the daily batch; nothing is fetched here.
+        analyses={p['id']:analyze(p,allow_network=False) for p in chosen}
+        pending=[i for i,a in analyses.items() if not a]
+        db.record_demand(pending)
+        update_job(token,done=len(chosen))
         if not job_live(token):return
-        update_job(token,stage='이름이 다른 같은 사업과 추가지원 사업을 구분하고 있어요.')
-        merged,relations=semantic_merge(chosen)
-        matches=[]
-        for p in merged:
-            a=analyze(p,allow_network=False)
-            if not a and len(p['sources'])>1:
-                try:a=analyze(p)
-                except Exception:pass
-            matches.append(assess(p,profile,a))
+        relations=db.relations_for(meta['run_id'],analyses) if meta.get('run_id') else []
+        matches=[assess(p,profile,analyses[p['id']]) for p in chosen]
         matches=finalize(matches,profile)
         personalized=False
         if not job_live(token):return
@@ -186,7 +175,7 @@ def run_recommendation(token,request):
         questions=next_questions(matches,profile,QUESTION_BANK)
         groups={name:[p for p in matches if p['group']==name] for name in GROUPS}
         result={'policies':matches,'groups':groups,'questions':questions,'relations':relations,
-            'meta':{**meta,'reviewed':len(chosen),'merged':len(chosen)-len(merged),'analysis_failed':len(failed),
+            'meta':{**meta,'reviewed':len(chosen),'merged':sum(str(p.get('merge_reason','')).startswith('AI') for p in chosen),'analysis_failed':len(pending),
                     'personalized':personalized,'profile_sent_to_llm':request.consent,
                     'scope_note':f'전체 {len(catalog)}개 후보 중 필요한 도움과의 관련성·어르신 대상·지역을 기준으로 {len(chosen)}개 원문을 이번에 검토했어요.'},
             'notice':'조건 확인 결과는 신청 자격 확정이 아닙니다. 선정확률은 추정하지 않으며 신청 장벽은 추천 순위에 반영하지 않습니다.'}

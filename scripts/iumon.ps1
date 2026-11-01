@@ -52,8 +52,8 @@ try {
         }
         switch ($Action) {
             'start' { $env:PORT = "$Port"; Invoke-AppPython app/server.py }
-            'refresh' { Invoke-AppPython app/collect.py }
-            'analyze' { Invoke-AppPython app/warm_analysis.py --limit $Limit }
+            'refresh' { Invoke-AppPython app/batch.py --stages collect,details,publish }
+            'analyze' { Invoke-AppPython app/batch.py --stages analyze --llm-limit $Limit }
         }
     }
 } finally {
