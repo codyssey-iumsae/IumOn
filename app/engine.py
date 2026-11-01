@@ -173,26 +173,55 @@ STOP_BIGRAMS=frozenset('지원 사업 서비 비스 대상 어르 르신 노인 
                        '아파 해요 어요 아요 워요 돼요 세요 가요 데요 는데 하고 해서 있어 없어 싶어 같아 요해 담돼'.split())
 
 @lru_cache(maxsize=64)
-def query_bigrams(query):
+def query_words(query):
+    """Each story word and search term as its own set of character pairs (common pairs removed).
+    Matching per word keeps one shared fragment, such as 에너지 inside 에너지바우처, from counting as a hit."""
+    out=[]
     # A trailing particle is dropped so that 병원에 counts as one word (병원), not two pairs.
-    words=[re.sub(r'(?<=..)[이가을를은는에의도와과로]$','',w) for w in re.findall(r'[가-힣a-z0-9]+',query.lower())]
-    return frozenset(w[i:i+2] for w in words for i in range(len(w)-1))-STOP_BIGRAMS
+    for w in re.findall(r'[가-힣a-z0-9]+',query.lower()):
+        w=re.sub(r'(?<=..)[이가을를은는에의도와과로]$','',w)
+        grams=frozenset(w[i:i+2] for i in range(len(w)-1))-STOP_BIGRAMS
+        if grams and grams not in [g for _,g in out]:out.append((w,grams))
+    return tuple(out)
 
-def relevance(p,profile):
-    """Need tier, lower first: 0 direct, 1 related, 2 priority topic, 3 other selected need, 4 unrelated."""
-    # Lexical tier over the story plus LLM search terms. Optional remote GPU embeddings expand the
+@lru_cache(maxsize=8192)
+def text_grams(value):
+    """Character pairs inside each word of a text, so pairs never span a space (체육인 지원 has no 인지)."""
+    return frozenset(w[i:i+2] for w in re.findall(r'[가-힣a-z0-9]+',str(value or '').lower()) for i in range(len(w)-1))
+
+def match(p,profile):
+    """(need tier, strength). Tier, lower first: 0 direct, 1 related, 2 priority topic, 3 other selected need,
+    4 unrelated. Strength counts matched words (title words twice), to order policies inside one tier."""
+    # Lexical match over the story plus LLM search terms. Optional remote GPU embeddings expand the
     # candidate pool in retrieve(); these evidence/eligibility ranking rules remain unchanged.
     # search_terms are policy words the LLM derived from the consented story (e.g. 비가 새요 -> 주택개보수).
     query=' '.join([*(profile.get('focus_summary') or profile.get('story_summary') or []),*profile.get('search_terms',[])])
     body=' '.join(p.get(f) or '' for f in ('summary','target','benefit'))
     words=[w for triggers,policy_words in SYNONYMS if any(t in query for t in triggers) for w in policy_words]
-    grams=query_bigrams(query);title,plain=norm(p['title']),norm(body)
-    in_title=sum(g in title for g in grams)
-    if any(w in p['title'] for w in words) or in_title>=2:return 0
-    if any(w in body for w in words) or in_title==1 or sum(g in plain for g in grams)>=2:return 1
+    found=query_words(query);units=[g for _,g in found];title,plain=text_grams(p['title']),text_grams(body)
+    title_words=re.findall(r'[가-힣a-z0-9]+',p['title'].lower())
+    # A word is present when all its character pairs appear (one may be missing in words of 4+ pairs).
+    # A single-pair word such as 대화 must start a title word (not 현대화) and never counts in long texts.
+    def present(text,shortest):
+        return sum(sum(g in text for g in u)>=max(len(u)-(len(u)>3),1) for u in units if len(u)>=shortest)
+    short=sum(any(t.startswith(w) for t in title_words) for w,u in found if len(u)==1)
+    in_title=present(title,2)+short+sum(w in p['title'] for w in words)
+    in_body=present(plain,2)+sum(w in body for w in words)
+    partial=sum(any(g in title for g in u) for u in units if len(u)>=2)
+    strength=2*in_title+in_body+partial
+    if in_title:return 0,strength
+    # Fragments of two different words in the title still suggest a link, one level lower.
+    if in_body or partial>=2:return 1,strength
     needs=profile.get('needs',[])
     first=needs if profile.get('priority_mode') in ('all','unknown') else [profile.get('priority')]
-    return 2 if set(first)&set(p['topics']) else 3 if set(needs)&set(p['topics']) else 4
+    return (2 if set(first)&set(p['topics']) else 3 if set(needs)&set(p['topics']) else 4),strength
+
+def relevance(p,profile):
+    return match(p,profile)[0]
+
+def match_rank(p,profile):
+    """Stronger word match first, capped so it stays a small int like the other RANKING keys."""
+    return -min(9,match(p,profile)[1])
 
 # These are source-text audience restrictions, not LLM audience guesses. Generic 'student' is
 # deliberately insufficient: older adults can attend university, lifelong or broadcast schools.
@@ -225,7 +254,10 @@ def audience_exclusion(policy,profile):
 def retrieve(catalog,profile):
     catalog=[p for p in catalog if not audience_exclusion(p,profile)]
     town=profile.get('town')
-    lexical=sorted(catalog,key=lambda p:(relevance(p,profile),not p['senior'],REGION_TIERS[region_fit(p,town)],p['title']))
+    def key(p):
+        tier,strength=match(p,profile)
+        return tier,-strength,not p['senior'],REGION_TIERS[region_fit(p,town)],p['title']
+    lexical=sorted(catalog,key=key)
     from embeddings import rerank
     return rerank(catalog,profile,lexical)
 
@@ -498,6 +530,7 @@ def next_questions(matches,profile,question_bank):
 RANKING=[  # earlier criterion wins; each returns a small int, lower first. Access (mobility/digital) is never one.
     ('group',       lambda p,u:{'receiving':1,'excluded':2}.get(p['group'],0)),
     ('need',        relevance),
+    ('match',       match_rank),
     ('eligibility', lambda p,u:{'match':0,'unknown':1,'mismatch':2}.get(p.get('eligibility_state'),1)),
     ('region',      lambda p,u:REGION_TIERS[p.get('region_fit') or region_fit(p,u.get('town'))]),
     ('period',      lambda p,u:{'open':0,'always':0,'upcoming':1}.get(p.get('period_status',{}).get('state'),2)),

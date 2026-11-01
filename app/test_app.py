@@ -7,7 +7,7 @@ from unittest.mock import patch
 from analysis import validate_analysis,validate_tree,valid_evidence,money_in_quote,documents,fingerprint,cache_set
 import batch
 import db
-from engine import retrieve,create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
+from engine import retrieve,relevance,create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
 from server import Profile,RecommendRequest,QUESTION_BANK,BASIC_QUESTIONS,status
 from journey import understand_story,prepare,intake_plan
 
@@ -458,6 +458,25 @@ class SearchTermTests(unittest.TestCase):
         issues=[{'label':'집이 낡았어요','topic':'주거','terms':['주택개보수']},{'label':'끼니','topic':'돌봄','terms':['도시락','<x>']}]
         self.assertEqual(intake_plan(issues,'1',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['도시락'])
         self.assertEqual(intake_plan(issues,'all',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['주택개보수','도시락'])
+    def test_short_word_must_start_a_title_word(self):
+        user={**PROFILE,'focus_summary':['귀가 안 들려 대화가 어려워요'],'search_terms':[]}
+        self.assertNotEqual(relevance(policy(title='과수고품질시설현대화',summary='',target='',benefit='',topics=['기타']),user),0)
+        self.assertEqual(relevance(policy(title='어르신 대화 상대 서비스',summary='',target='',benefit=''),user),0)
+    def test_pairs_do_not_span_words(self):
+        user={**PROFILE,'focus_summary':['자꾸 잊어버려요'],'search_terms':['인지지원']}
+        self.assertNotEqual(relevance(policy(title='체육인 복지 지원',summary='',target='',benefit='',topics=['기타']),user),0)
+        self.assertEqual(relevance(policy(title='치매 인지지원 서비스',summary='',target='',benefit=''),user),0)
+    def test_shared_fragment_is_not_a_direct_match(self):
+        user={**PROFILE,'priority':'주거','needs':['주거'],'focus_summary':['겨울 난방비가 걱정돼요'],'search_terms':['에너지바우처']}
+        voucher=policy(id='v',title='에너지바우처',summary='',target='',benefit='')
+        tour=policy(id='t',title='녹색에너지 체험관 견학',summary='',target='',benefit='',topics=['기타'])
+        self.assertEqual((relevance(voucher,user),relevance(tour,user)),(0,4))
+    def test_stronger_word_match_ranks_first_within_tier(self):
+        user={**PROFILE,'priority':'주거','needs':['주거'],'focus_summary':['집이 낡아서 비가 새요'],'search_terms':['주택개보수','집수리']}
+        weak=assess(policy(id='a-weak',title='주택 개보수 상담',topics=['주거']),user,analysis())
+        strong=assess(policy(id='z-strong',title='노후주택개보수 집수리 지원',topics=['주거']),user,
+                      analysis(application={'state':'unknown'}))
+        self.assertEqual([p['id'] for p in finalize([weak,strong],user)],['z-strong','a-weak'])
     def test_search_terms_reach_policies_the_story_words_miss(self):
         user={**PROFILE,'priority':'생활비','needs':['생활비'],'focus_summary':['집이 낡아서 비가 새요']}
         house=policy(id='house',title='노후주택 개보수 지원',topics=['주거'],summary='',benefit='')
