@@ -50,3 +50,9 @@ footer{font-size:13px;line-height:1.85}
 .check-list .match{color:#246c33}
 .condition.match>div b{background:#d5f3d8;color:#246c33}
 .policy-reason{background:#e8f6ea;color:#246c33}
+/* 초록을 홈·안내 영역까지 확장해 단색 느낌 해소 (핑크는 주색 유지) */
+.icon-tile{background:#d5f3d8;color:#246c33}
+.privacy-card{background:#e8f6ea;color:#3f5a46}
+.consultation-note{background:#e8f6ea}
+.recommend-consent{background:#e8f6ea}
+.followup{background:#e3f1e6;border-color:#c5e4cb}
