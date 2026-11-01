@@ -12,6 +12,9 @@ _slots = threading.BoundedSemaphore(4)
 class ModelUnavailable(RuntimeError):
     pass
 
+class ModelRejected(ModelUnavailable):
+    """The provider refused the request itself (key, permission, quota): retrying other inputs cannot help."""
+
 def configured():
     return bool(os.getenv('LLM_API_KEY') and os.getenv('LLM_BASE_URL'))
 
@@ -37,7 +40,7 @@ def chat_json(system, payload, max_tokens=3500):
                     raise ValueError('JSON object required')
                 return result
             except urllib.error.HTTPError as exc:
-                raise ModelUnavailable('AI 요청에 실패했어요. 잠시 후 다시 시도해 주세요.') from None
+                raise ModelRejected('AI 요청에 실패했어요. 잠시 후 다시 시도해 주세요.', exc.code) from None
             except Exception:
                 if attempt == 1:
                     raise ModelUnavailable('AI 답변을 검증하지 못했어요. 다시 시도해 주세요.') from None

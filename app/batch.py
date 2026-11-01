@@ -137,23 +137,42 @@ def analyze(limit, workers=4):
         if key in done_keys or attempts >= 3 or (last or '').startswith(today):
             continue
         todo.append((key, p))
-    todo.sort(key=lambda x: (-wanted.get(x[1]['id'], 0), not x[1]['senior'], SCOPE_ORDER.get(x[1]['scope'], 3), x[1]['title']))
+    def priority(item):
+        p = item[1]
+        # Demand is counted per policy ID; a merged policy inherits the demand of every source it absorbed.
+        ids = {p['id']} | {r['source'] + '-' + r['id'] for r in p['sources']}
+        merged = str(p.get('merge_reason', '')).startswith('AI')  # merging discards the parts' analyses
+        return (-sum(wanted.get(i, 0) for i in ids), not merged, not p['senior'], SCOPE_ORDER.get(p['scope'], 3), p['title'])
+    todo.sort(key=priority)
     chosen = todo[:limit] if limit > 0 else todo
+    from llm import ModelRejected
     ok = bad = 0
+    rejected = None
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(run_analysis, p): (key, p) for key, p in chosen}
         for future in as_completed(futures):
             key, p = futures[future]
+            if future.cancelled():
+                continue
             try:
                 future.result()
-                db.clear_demand([p['id']])
+                db.clear_demand([p['id']] + [r['source'] + '-' + r['id'] for r in p['sources']])
                 ok += 1
+            except ModelRejected as exc:
+                # A refused key or quota is not the policy's fault: stop without counting it against the policy.
+                rejected = exc
+                for other in futures:
+                    other.cancel()
+                continue
             except Exception as exc:
                 db.record_failure(key, p['id'], type(exc).__name__)
                 bad += 1
             log(f'public analysis {ok + bad}/{len(chosen)}, verified={ok}, failed={bad}')
+    if rejected:
+        code = rejected.args[1] if len(rejected.args) > 1 else '?'
+        log(f'LLM provider refused requests (HTTP {code}); analysis stopped. Check LLM_API_KEY/LLM_BASE_URL.')
     log(f'analysis remaining after this run: {len(todo) - ok}')
-    return {'verified': ok, 'failed': bad, 'remaining': len(todo) - ok}
+    return {'verified': ok, 'failed': bad, 'remaining': len(todo) - ok, 'rejected': bool(rejected)}
 
 # --- runner --------------------------------------------------------------------------------------
 

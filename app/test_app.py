@@ -385,5 +385,22 @@ class BatchPipelineTests(unittest.TestCase):
         self.assertEqual((len(catalog),meta['counts']),(3,{'national':3}))
         self.assertEqual(len(db.analyzed_keys()),2)
         self.assertFalse(batch.LOCK.exists())
+    def test_rejected_key_stops_analysis_without_blaming_policies(self):
+        from llm import ModelRejected
+        rows=[{'servId':f'N{i}','servNm':f'노인 지원 {i}','lastModYmd':'20261101'} for i in range(5)]
+        with db.connect() as conn:db.replace_source(conn,'national',rows,'servId')
+        with patch('analysis.chat_json',side_effect=ModelRejected('denied',403)) as model:
+            result=batch.run(('publish',),dedup_limit=0) or batch.analyze(5,workers=1)
+        self.assertTrue(result['rejected']);self.assertEqual(db.failures(),{})
+        self.assertLess(model.call_count,5)
+    def test_merged_policy_is_analyzed_first_with_inherited_demand(self):
+        merged=policy(id='gov-a',title='나 지원',merge_reason='AI 원문 비교: 같은 사업',senior=False,
+                      sources=[{'source':'gov','label':'정부24','id':'a'},{'source':'national','label':'복지로','id':'b'}])
+        self.publish([policy(id='gov-z',title='가 지원'),merged])
+        db.record_demand(['national-b'])
+        seen=[]
+        with patch('analysis.chat_json',side_effect=lambda *a,**k:seen.append(a[1]['title']) or analysis()):
+            batch.analyze(1,workers=1)
+        self.assertEqual((seen,db.demand()),(['나 지원'],{}))
 
 if __name__=='__main__':unittest.main(verbosity=2)
