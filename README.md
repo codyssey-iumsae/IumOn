@@ -112,21 +112,23 @@ python app/server.py
 
 ## Docker 배포 (공개 시연)
 
-공개 시연은 일반 서버(GPU 미사용)에서 Docker Compose로 운영합니다. 2026-10-31 배포 기준입니다. Dockerfile·Compose 파일은 아직 이 저장소에 반영되지 않았고 서버 소스 폴더에 있습니다.
+자동 배포 구성과 서버 최초 설정은 [자동 배포 안내](docs/automatic-deployment.md)를 참고합니다. 설정 완료 후 서버가 GitHub를 주기적으로 확인하여 `main`의 CI가 성공한 커밋을 배포합니다. 사설망 서버에서 GitHub로 나가는 통신을 사용합니다.
+
+공개 시연은 일반 서버(GPU 미사용)에서 Docker Compose로 운영합니다. 아래 검증 기록은 2026-10-31 배포 기준입니다. Dockerfile·Compose 파일은 서버의 운영 설정을 저장소에 반영했습니다. 경로는 2026-11-01 서버 확인 결과로 수정했습니다.
 
 | 항목 | 내용 |
 | --- | --- |
 | 구성 | iumon-app-1(이음온 서버), iumon-tunnel-1(Cloudflare Quick Tunnel) |
 | 버전 | Docker Engine 29.9.2, Compose v5.6.1 |
 | 앱 포트 | 서버 127.0.0.1:8765, 외부 접속은 터널로만 |
-| 소스 | /home/ncloud/iumon |
-| 데이터 | /home/ncloud/iumon-data (정책 JSON·SQLite, 컨테이너 재시작 후 보존) |
-| 설정 | /home/ncloud/iumon-secrets/app.env (서버 전용, 저장소·이미지에 넣지 않음) |
+| 소스 | /home1/ncloud/iumon |
+| 데이터 | /home1/ncloud/iumon-data (정책 JSON·SQLite, 컨테이너 재시작 후 보존) |
+| 설정 | /home1/ncloud/iumon-secrets/app.env (서버 전용, 저장소·이미지에 넣지 않음) |
 
 운영 명령은 서버에 SSH로 접속해 실행합니다.
 
 ~~~sh
-cd /home/ncloud/iumon
+cd /home1/ncloud/iumon
 sudo docker compose ps
 sudo docker compose logs --tail 100 app
 sudo docker compose logs --tail 100 tunnel

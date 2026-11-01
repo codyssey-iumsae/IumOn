@@ -23,7 +23,13 @@ jobs:
         with:
           python-version: '3.12'
       - run: python scripts/check_repo.py
+      - name: Validate deployment scripts
+        run: |
+          bash -n scripts/deploy.sh
+          python -m py_compile scripts/poll-deployment.py
+          shellcheck scripts/deploy.sh
       - run: python -m unittest discover -s tests -p "test_repo_policy.py" -v
+      - run: python -m unittest discover -s tests -p "test_deployment.py" -v
   app-tests:
     name: App tests
     runs-on: ubuntu-latest
