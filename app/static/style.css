@@ -53,3 +53,7 @@ footer{font-size:13px;line-height:1.85}
 .recommend-consent{background:#e8f6ea}
 .followup{background:#e3f1e6;border-color:#c5e4cb}
 .steps li::marker{color:#246c33}
+/* 상단 바·하단 바(footer·모바일 네비)를 옅은 초록으로 */
+.topbar{background:#d5f3d8;border-bottom:1px solid #c0e6c8}
+footer{background:#d5f3d8;border-top:1px solid #c0e6c8}
+.mobile-nav{background:#d5f3d8;border-top:1px solid #c0e6c8}
