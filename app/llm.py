@@ -18,7 +18,7 @@ class ModelRejected(ModelUnavailable):
 def configured():
     return bool(os.getenv('LLM_API_KEY') and os.getenv('LLM_BASE_URL'))
 
-def chat_json(system, payload, max_tokens=3500):
+def chat_json(system, payload, max_tokens=3500, *, usage_scope=None):
     if not configured():
         raise ModelUnavailable('AI 연결 설정을 확인해 주세요.')
     body = {'model': os.getenv('LLM_MODEL', 'gpt-5.4-mini'),
@@ -33,6 +33,12 @@ def chat_json(system, payload, max_tokens=3500):
             try:
                 with urllib.request.urlopen(request, timeout=65) as response:
                     obj = json.load(response)
+                if usage_scope and isinstance(obj.get('usage'), dict):
+                    try:
+                        import db
+                        db.record_usage(usage_scope, body['model'], obj['usage'])
+                    except Exception:
+                        pass  # Telemetry failure must not repeat a paid, successful request.
                 message = obj['choices'][0]['message']['content']
                 message = re.sub(r'^```(?:json)?\s*|\s*```$', '', message.strip())
                 result = json.loads(message)

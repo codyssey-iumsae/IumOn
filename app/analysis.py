@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import time
 from datetime import datetime, timezone
 from typing import Literal, Any
 from pydantic import BaseModel, ConfigDict, Field
@@ -240,9 +242,28 @@ def analyze(policy, allow_network=True):
         return validate_analysis(cached,policy)
     if not allow_network:
         return None
+    owner=secrets.token_hex(16)
+    deadline=time.monotonic()+610
+    while not db.claim_analysis(key,owner,time.time()):
+        cached=cache_get(key)
+        if cached:return validate_analysis(cached,policy)
+        if time.monotonic()>deadline:
+            from llm import ModelUnavailable
+            raise ModelUnavailable('정책 원문을 다른 작업에서 분석 중입니다. 잠시 후 다시 확인해 주세요.')
+        time.sleep(.25)
+    try:
+        cached=cache_get(key)  # A different process may have completed while this caller waited.
+        if cached:return validate_analysis(cached,policy)
+        result=_analyze_uncached(policy,key)
+        db.clear_failures([key])
+        return result
+    finally:
+        db.release_analysis(key,owner)
+
+def _analyze_uncached(policy,key):
     for attempt in range(2):
         raw=chat_json(PROMPT+('\n이전 답변의 스키마가 잘못되었습니다. 최상위 키를 정확히 따르고 null 대신 빈 배열/객체를 사용하세요.' if attempt else ''),
-                      {'title':policy['title'],'documents':documents(policy)},9500)
+                      {'title':policy['title'],'documents':documents(policy)},9500,usage_scope='policy_analysis')
         try:
             result=validate_analysis(raw,policy)
             break

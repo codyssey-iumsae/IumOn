@@ -16,7 +16,7 @@ from analysis import analyze
 from engine import load_catalog,retrieve,assess,finalize,personalize,next_questions,GROUPS,TOWNS
 import batch
 import db
-from llm import configured,chat_json
+from llm import configured,chat_json,ModelRejected,ModelUnavailable
 from journey import understand_story,prepare,intake_plan
 
 async def maintenance():
@@ -164,6 +164,7 @@ def run_recommendation(token,request):
         # The daily batch pre-analyzes policies; read those first so most requests make no LLM call.
         analyses={p['id']:analyze(p,allow_network=False) for p in chosen}
         missing=[p for p in chosen if not analyses[p['id']]]
+        analysis_errors={}
         done=len(chosen)-len(missing)
         update_job(token,done=done)
         if missing:
@@ -173,7 +174,12 @@ def run_recommendation(token,request):
                 futures={pool.submit(analyze,p):p for p in missing}
                 for future in as_completed(futures):
                     try:analyses[futures[future]['id']]=future.result()
-                    except Exception:pass # stays '분석 대기'; the batch retries it first
+                    except ModelRejected:
+                        analysis_errors[futures[future]['id']]=('provider_rejected','AI 연결 권한이나 호출 한도를 확인 중이에요. 잠시 후 다시 확인해 주세요.')
+                    except ModelUnavailable:
+                        analysis_errors[futures[future]['id']]=('temporarily_unavailable','AI 응답을 완료하지 못했어요. 잠시 후 다시 확인해 주세요.')
+                    except Exception:
+                        analysis_errors[futures[future]['id']]=('validation_failed','정책 원문 분석 결과를 검증하지 못했어요. 공식 안내를 확인해 주세요.')
                     done+=1
                     update_job(token,done=done)
         pending=[i for i,a in analyses.items() if not a]
@@ -181,6 +187,11 @@ def run_recommendation(token,request):
         if not job_live(token):return
         relations=db.relations_for(meta['run_id'],analyses) if meta.get('run_id') else []
         matches=[assess(p,profile,analyses[p['id']]) for p in chosen]
+        for p in matches:
+            if p['id'] in analysis_errors:
+                code,message=analysis_errors[p['id']]
+                p.update(analysis_error=code,analysis_message=message)
+                p['reasons']=[message]
         matches=finalize(matches,profile)
         personalized=False
         if not job_live(token):return

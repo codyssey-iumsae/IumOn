@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS cache(key TEXT PRIMARY KEY, kind TEXT, payload TEXT, 
 CREATE TABLE IF NOT EXISTS analysis_failures(
   fingerprint TEXT PRIMARY KEY, policy_id TEXT, attempts INTEGER, last_error TEXT, last_attempt TEXT);
 CREATE TABLE IF NOT EXISTS analysis_demand(policy_id TEXT PRIMARY KEY, hits INTEGER, last_seen TEXT);
+CREATE TABLE IF NOT EXISTS analysis_claims(key TEXT PRIMARY KEY, owner TEXT, expires REAL);
+CREATE TABLE IF NOT EXISTS llm_usage(day TEXT, kind TEXT, model TEXT, requests INTEGER,
+  input_tokens INTEGER, output_tokens INTEGER, PRIMARY KEY(day, kind, model));
 '''
 KEEP_RUNS = 3
 _ready = set()
@@ -180,3 +183,33 @@ def analyzed_keys():
 def failures():
     with connect() as db:
         return {f: (n, t) for f, n, t in db.execute('SELECT fingerprint, attempts, last_attempt FROM analysis_failures')}
+
+def claim_analysis(key, owner, stamp, lease=600):
+    with connect() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        conn.execute('DELETE FROM analysis_claims WHERE expires<?', (stamp,))
+        return conn.execute('INSERT OR IGNORE INTO analysis_claims VALUES (?,?,?)',
+                            (key, owner, stamp + lease)).rowcount == 1
+
+def release_analysis(key, owner):
+    with connect() as conn:
+        conn.execute('DELETE FROM analysis_claims WHERE key=? AND owner=?', (key, owner))
+
+def clear_failures(keys):
+    with connect() as conn:
+        conn.executemany('DELETE FROM analysis_failures WHERE fingerprint=?', [(key,) for key in keys])
+
+def record_usage(kind, model, usage):
+    def count(name):
+        value = usage.get(name, 0)
+        return value if type(value) is int and value >= 0 else 0
+    with connect() as conn:
+        conn.execute('INSERT INTO llm_usage VALUES (?,?,?,1,?,?) ON CONFLICT(day,kind,model) DO UPDATE SET '
+                     'requests=requests+1,input_tokens=input_tokens+excluded.input_tokens,'
+                     'output_tokens=output_tokens+excluded.output_tokens',
+                     (now()[:10], kind, model, count('prompt_tokens'), count('completion_tokens')))
+
+def usage_summary():
+    with connect() as conn:
+        return [dict(zip(('day','kind','model','requests','input_tokens','output_tokens'), row))
+                for row in conn.execute('SELECT * FROM llm_usage ORDER BY day,kind,model')]

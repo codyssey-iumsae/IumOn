@@ -123,11 +123,12 @@ def stats_for(counts):
     fetched = [v['fetched_at'] for v in status.values() if v.get('fetched_at')]
     return {'collected_at': max(fetched) if fetched else None, 'errors': errors, 'sources': status, 'counts': counts}
 
-def analyze(limit, workers=4):
+def analyze(limit, workers=4, catalog=None):
     """Analyze published policies with no cached analysis, most requested first. limit 0 means all."""
     from analysis import analyze as run_analysis, fingerprint
     from engine import load_catalog
-    catalog, _ = load_catalog()
+    if catalog is None:
+        catalog, _ = load_catalog()
     done_keys, wanted, failed = db.analyzed_keys(), db.demand(), db.failures()
     today = datetime.now(timezone.utc).date().isoformat()
     todo = []
@@ -171,8 +172,10 @@ def analyze(limit, workers=4):
     if rejected:
         code = rejected.args[1] if len(rejected.args) > 1 else '?'
         log(f'LLM provider refused requests (HTTP {code}); analysis stopped. Check LLM_API_KEY/LLM_BASE_URL.')
-    log(f'analysis remaining after this run: {len(todo) - ok}')
-    return {'verified': ok, 'failed': bad, 'remaining': len(todo) - ok, 'rejected': bool(rejected)}
+    ready=db.analyzed_keys()
+    remaining=sum(fingerprint(p) not in ready for p in catalog)
+    log(f'analysis remaining after this run: {remaining}')
+    return {'verified': ok, 'failed': bad, 'remaining': remaining, 'rejected': bool(rejected)}
 
 # --- runner --------------------------------------------------------------------------------------
 
@@ -192,6 +195,7 @@ def run(stages=STAGES, llm_limit=100, dedup_limit=30, workers=4):
     try:
         with db.connect() as conn:
             run_id = db.start_run(conn)
+        published = False
         try:
             if 'collect' in stages:
                 if not os.getenv('DATA_GO_KR_KEY'):
@@ -199,23 +203,39 @@ def run(stages=STAGES, llm_limit=100, dedup_limit=30, workers=4):
                 collect()
             if 'details' in stages:
                 details()
-            published = False
+            result=None
             if 'publish' in stages:
                 catalog, relations, counts = build(allow_llm='analyze' in stages, dedup_limit=dedup_limit)
                 if not catalog:
                     raise RuntimeError('게시할 정책이 없어요. 수집 결과를 확인해 주세요.')
+                stats=stats_for(counts)
+                if 'analyze' in stages:
+                    result=analyze(llm_limit, workers, catalog=catalog)
+                    stats['analysis_ready']=len(catalog)-result['remaining']
+                    stats['analysis_total']=len(catalog)
+                    # Keep serving the previous snapshot while a capped/rejected batch catches up.
+                    if stats['analysis_ready']/len(catalog)<.95:
+                        result['publication_deferred']=True
+                        with db.connect() as conn:
+                            db.end_run(conn,run_id,'failed',{'reason':'analysis_coverage_below_95_percent',**stats})
+                        log('publication deferred: less than 95% analyzed; previous catalog retained')
+                        return result
                 with db.connect() as conn:
-                    db.publish(conn, run_id, catalog, relations, stats_for(counts))
+                    db.publish(conn, run_id, catalog, relations, stats)
                 published = True
                 log('published catalog:', len(catalog), 'relations:', len(relations))
+            elif 'analyze' in stages:
+                result=analyze(llm_limit, workers)
             if not published:
                 with db.connect() as conn:
                     db.end_run(conn, run_id, 'done')
-            if 'analyze' in stages:
-                analyze(llm_limit, workers)
+            return result
         except BaseException as exc:
             with db.connect() as conn:
-                db.end_run(conn, run_id, 'failed', {'error': str(exc)[:300]})
+                if published:
+                    db.set_meta(conn,'last_analysis_error',json.dumps({'run_id':run_id,'error':type(exc).__name__}))
+                else:
+                    db.end_run(conn, run_id, 'failed', {'error': type(exc).__name__})
             raise
     finally:
         LOCK.unlink(missing_ok=True)
@@ -231,7 +251,7 @@ def due(now=None):
     started = datetime.fromisoformat(last[0]).astimezone(KST)
     if last[1] == 'running' and now - started < timedelta(hours=3):
         return False
-    if db.active_run() is None:
+    if last[1]=='failed' or db.active_run() is None:
         return now - started >= timedelta(hours=1)  # nothing published yet: retry hourly
     return started.date() < now.date() and now.hour >= env_int('BATCH_HOUR', 4)
 
@@ -337,16 +357,39 @@ def main(argv=None):
     parser.add_argument('--dedup-limit', type=int, default=env_int('BATCH_DEDUP_LIMIT', 30), help='새 중복 판정 상한')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--analysis-status', action='store_true', help='게시 정책 분석 완료율·실패·토큰 사용량만 확인')
+    parser.add_argument('--backfill', action='store_true', help='수집·중복 판정 없이 미분석 정책 전체 분석, 캐시로 재개')
+    parser.add_argument('--retry-failed', action='store_true', help='현재 미분석 정책의 재시도 보류 해제')
     args = parser.parse_args(argv)
     migrate_legacy()
+    if args.analysis_status:
+        from analysis import fingerprint
+        from engine import load_catalog
+        catalog,_=load_catalog()
+        keys=db.analyzed_keys(); failed=db.failures()
+        pending=[fingerprint(p) for p in catalog if fingerprint(p) not in keys]
+        print(json.dumps({'total':len(catalog),'ready':len(catalog)-len(pending),'pending':len(pending),
+                          'failed':sum(k in failed for k in pending),
+                          'retry_exhausted':sum(failed.get(k,(0,''))[0]>=3 for k in pending),
+                          'usage':db.usage_summary()},ensure_ascii=False,indent=2))
+        return 0
     if args.dry_run:
         return dry_run()
+    if args.retry_failed:
+        from engine import load_catalog
+        from analysis import fingerprint
+        ready=db.analyzed_keys()
+        db.clear_failures([fingerprint(p) for p in load_catalog()[0] if fingerprint(p) not in ready])
+    if args.backfill:
+        args.stages='analyze';args.llm_limit=0
     stages = tuple(s.strip() for s in args.stages.split(',') if s.strip())
     unknown = set(stages) - set(STAGES)
     if unknown:
         parser.error('알 수 없는 단계: ' + ', '.join(sorted(unknown)))
     try:
-        run(stages, args.llm_limit, args.dedup_limit, args.workers)
+        result=run(stages, args.llm_limit, args.dedup_limit, args.workers)
+        if result and (result.get('publication_deferred') or (args.backfill and result['remaining'])):
+            return 2  # An incomplete backfill must not be reported as fully successful.
     except Busy as exc:
         log(exc)
         return 1
