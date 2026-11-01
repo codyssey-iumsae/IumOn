@@ -305,20 +305,31 @@ class BatchPipelineTests(unittest.TestCase):
         with db.connect() as conn:
             run_id=db.start_run(conn);db.publish(conn,run_id,policies,list(relations),{'collected_at':'2026-11-01T00:00:00+00:00','errors':[],'sources':{},'counts':{}})
         return run_id
-    def test_recommendation_and_preparation_never_use_network(self):
+    def run_job(self,profile=PROFILE):
         import server
-        docs=[{'text':'신청서 1부','source':[{'source':'gov','label':'정부24','id':'x'}],'field':'정부24 상세.구비서류'}]
-        self.publish([policy(official_documents=docs)])
-        offline=AssertionError('network used during a request')
-        with patch('urllib.request.urlopen',side_effect=offline),patch('engine.chat_json',side_effect=offline), \
-             patch('analysis.chat_json',side_effect=offline):
-            body=RecommendRequest(profile=PROFILE,consent=False,limit=6)
-            server._jobs['t']={'state':'running','created':time.monotonic()}
-            server.run_recommendation('t',body)
-            job=server._jobs.pop('t')
+        server._jobs['t']={'state':'running','created':time.monotonic()}
+        server.run_recommendation('t',RecommendRequest(profile=profile,consent=False,limit=6))
+        return server._jobs.pop('t')
+    def test_missing_analysis_is_analyzed_during_request_and_cached(self):
+        self.publish([policy()])
+        with patch('urllib.request.urlopen',side_effect=AssertionError('public API used')), \
+             patch('analysis.chat_json',return_value=analysis()) as model:
+            job=self.run_job()
             self.assertEqual(job['state'],'done')
             p=job['result']['policies'][0]
-            self.assertEqual((p['analysis_state'],job['result']['meta']['analysis_failed']),('pending',1))
+            self.assertEqual((p['analysis_state'],job['result']['meta']['analysis_failed']),('grounded',0))
+            self.assertEqual(model.call_count,1)
+            self.run_job()  # second request reads the cached analysis
+            self.assertEqual(model.call_count,1)
+        self.assertEqual(db.demand(),{})
+    def test_failed_live_analysis_stays_pending_and_is_queued(self):
+        docs=[{'text':'신청서 1부','source':[{'source':'gov','label':'정부24','id':'x'}],'field':'정부24 상세.구비서류'}]
+        self.publish([policy(official_documents=docs)])
+        with patch('urllib.request.urlopen',side_effect=AssertionError('public API used')), \
+             patch('analysis.chat_json',side_effect=RuntimeError('model down')):
+            job=self.run_job()
+            p=job['result']['policies'][0]
+            self.assertEqual((job['state'],p['analysis_state'],job['result']['meta']['analysis_failed']),('done','pending',1))
             self.assertEqual(prepare(p,PROFILE,fetch_documents=True)['documents'],docs)
         self.assertEqual(db.demand(),{'gov-x':1})
     def test_stored_analysis_is_used_without_network(self):
