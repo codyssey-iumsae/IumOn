@@ -194,7 +194,36 @@ def relevance(p,profile):
     first=needs if profile.get('priority_mode') in ('all','unknown') else [profile.get('priority')]
     return 2 if set(first)&set(p['topics']) else 3 if set(needs)&set(p['topics']) else 4
 
+# These are source-text audience restrictions, not LLM audience guesses. Generic 'student' is
+# deliberately insufficient: older adults can attend university, lifelong or broadcast schools.
+SCHOOL_AUDIENCE=re.compile(r'초[·ㆍ･,\s]*중[·ㆍ･,\s]*고|초등학생|중학생|고등학생|고등학교생|'
+                          r'(?:초등|중|고등)학교\s*(?:재학생|학생)|고교\s*학비|학교(?:우유)?급식')
+ADULT_EDUCATION=re.compile(r'방송통신|평생교육|성인|만학|학력인정|검정고시|어르신|노인|고령|조부모|조손|'
+                          r'(?<!\d)(?:6\d|[7-9]\d|1[01]\d|120)\s*세')
+SCHOOL_WORKER=re.compile(r'급식.*(?:종사|조리|일자리|근로)|(?:종사|조리|일자리|근로).*급식')
+OTHER_RECIPIENT=re.compile(r'학부모|보호자|교직원|교사|조리원|종사자|대학|일반인|누구나|가족')
+
+def audience_exclusion(policy,profile):
+    """Conservative pre-retrieval guard for school-pupil-only benefits in a senior's own search."""
+    age=profile.get('age')
+    if type(age) not in (int,float) or age<65:return None
+    reasons=[]
+    for version in policy.get('versions') or [policy]:
+        title=str(version.get('title') or '')
+        target=str(version.get('target') or '')
+        body=' '.join(str(version.get(k) or '') for k in ('title','target','criteria'))
+        if ADULT_EDUCATION.search(body) or SCHOOL_WORKER.search(body):return None
+        if OTHER_RECIPIENT.search(title):return None
+        found=SCHOOL_AUDIENCE.search(title)
+        # A restriction/exception buried in criteria does not make students the beneficiaries.
+        if not found and len(target)<=100 and not OTHER_RECIPIENT.search(target) and not re.search(r'제외|아닌|미해당',target):
+            found=SCHOOL_AUDIENCE.search(target)
+        if not found:return None  # Conflicting/unknown merged source: do not silently discard it.
+        reasons.append('초·중·고 학생 대상 지원이므로 어르신 본인 혜택 추천에서 제외해요.')
+    return reasons[0] if reasons else None
+
 def retrieve(catalog,profile):
+    catalog=[p for p in catalog if not audience_exclusion(p,profile)]
     town=profile.get('town')
     lexical=sorted(catalog,key=lambda p:(relevance(p,profile),not p['senior'],REGION_TIERS[region_fit(p,town)],p['title']))
     from embeddings import rerank
@@ -274,6 +303,13 @@ def application_period(p,a,today=None):
 
 def assess(p,profile,analysis=None):
     p=copy.deepcopy(p)
+    excluded=audience_exclusion(p,profile)
+    if excluded:
+        return {**p,'group':'excluded','status':'학생 대상 지원 · 본인 추천 범위 밖','analysis_state':'audience_excluded',
+                'eligibility_state':'unknown','major_conditions_state':'unknown','region_fit':region_fit(p,profile.get('town')),
+                'tree':{'state':'unknown','label':excluded},'checks':[],'reasons':[excluded],
+                'access':application_access([],profile),'period_status':{'state':'unknown','label':'접수기간 확인 필요'},
+                'benefit_info':{'kind':'unknown','amount_krw':None},'score':None}
     a=analysis or analyze(p,allow_network=False)
     town=profile.get('town')
     p['region_fit']=fit=region_fit(p,town)
