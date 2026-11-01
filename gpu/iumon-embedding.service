@@ -1,0 +1,24 @@
+[Unit]
+Description=IumOn private GPU embedding service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=ncloud
+WorkingDirectory=/home1/ncloud/iumon-embedding
+EnvironmentFile=/home1/ncloud/iumon-embedding/service.env
+Environment=HF_HOME=/home1/ncloud/iumon-embedding/model-cache
+Environment=TOKENIZERS_PARALLELISM=false
+ExecStart=/home1/ncloud/iumon-embedding/venv/bin/uvicorn server:app --host 10.1.2.25 --port 8790 --workers 1 --no-access-log --log-level warning --limit-concurrency 12
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=900
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home1/ncloud/iumon-embedding/model-cache
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

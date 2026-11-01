@@ -29,6 +29,9 @@ async def maintenance():
             # Recommendation requests never call public APIs and only read the published catalog.
             if await asyncio.to_thread(batch.due):
                 await asyncio.to_thread(batch.run_scheduled)
+            import embeddings
+            if embeddings.configured():
+                await asyncio.to_thread(embeddings.index_current)
         except Exception:
             pass # The published catalog stays readable; the batch records source failures.
         await asyncio.sleep(60)
