@@ -181,7 +181,8 @@ def query_bigrams(query):
 def relevance(p,profile):
     """Need tier, lower first: 0 direct, 1 related, 2 priority topic, 3 other selected need, 4 unrelated."""
     # Lexical (synonym table + shared character pairs) over the story plus LLM search terms. Local embedding
-    # models that fit the 1GB server ranked worse than this on real policies, and the LLM API has no embeddings.
+    # models that fit the 1GB server ranked worse than this on real policies, and the current Codyssey key's
+    # scope does not include /embeddings (403 public_api_scope_denied). See README for the measurements.
     # search_terms are policy words the LLM derived from the consented story (e.g. 비가 새요 -> 주택개보수).
     query=' '.join([*(profile.get('focus_summary') or profile.get('story_summary') or []),*profile.get('search_terms',[])])
     body=' '.join(p.get(f) or '' for f in ('summary','target','benefit'))
