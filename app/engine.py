@@ -3,13 +3,12 @@ Application access is separate from eligibility and never changes ranking.
 """
 import copy
 import html
-import json
 import re
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from functools import lru_cache
 from zoneinfo import ZoneInfo
-from config import DATA_DIR
+import db
 from analysis import analyze, documents, fingerprint, cache_get, cache_set, valid_evidence
 from llm import chat_json
 
@@ -132,21 +131,22 @@ def build_catalog(snapshot,details=None):
             if p:rows.append(enrich(p,details or {}))
     return merge(rows)
 
+EMPTY_META={'collected_at':None,'errors':[],'sources':{},'counts':{},'candidates':0}
+
 @lru_cache(maxsize=2)
-def _load(snapshot_time,detail_time):
-    path=DATA_DIR/'snapshot.json'
-    if not path.exists():return [],{'collected_at':None,'errors':[],'counts':{}}
-    snapshot=json.loads(path.read_text(encoding='utf-8-sig'))
-    dp=DATA_DIR/'details.json'
-    details=json.loads(dp.read_text(encoding='utf-8-sig')) if dp.exists() else {}
-    policies=build_catalog(snapshot,details)
-    return policies,{'collected_at':snapshot['collected_at'],'errors':snapshot.get('errors',[]),
-        'sources':snapshot.get('source_status',{}),'counts':{k:len(v) for k,v in snapshot['sources'].items()},
-        'candidates':len(policies)}
+def _load(run_id):
+    return db.load_policies(run_id)
 
 def load_catalog():
-    s,d=DATA_DIR/'snapshot.json',DATA_DIR/'details.json'
-    return _load(s.stat().st_mtime_ns if s.exists() else 0,d.stat().st_mtime_ns if d.exists() else 0)
+    """Published catalog only: the batch (batch.py) is the sole writer, so this never touches the network."""
+    run=db.active_run()
+    if run is None:
+        from batch import migrate_legacy  # one-time import of the former JSON files, if any
+        if migrate_legacy():run=db.active_run()
+    if run is None:return [],dict(EMPTY_META)
+    run_id,stats=run
+    policies=_load(run_id)
+    return policies,{**EMPTY_META,**stats,'candidates':len(policies),'run_id':run_id}
 
 def named_towns(value):
     """Towns a text names. None when a town is named only to exclude it, so nothing can be claimed."""
@@ -325,14 +325,22 @@ def assess(p,profile,analysis=None):
         'benefit_info':b,'access':access,'period_status':period,'reasons':reasons,
         'analysis_notes':a['notes'],'score':None,'analysis_model':'gpt-5.4-mini'}
 
-def dedup_candidates(policies):
-    pairs=[]
-    for i,a in enumerate(policies):
-        for b in policies[i+1:]:
-            if a['scope']!=b['scope']:continue # central programs and local additions stay separate
-            similarity=SequenceMatcher(None,norm(a['title']),norm(b['title'])).ratio()
-            if similarity>=.55:pairs.append((similarity,a,b))
-    return sorted(pairs,key=lambda x:-x[0])[:12]
+def dedup_candidates(policies,limit=12):
+    """Title pairs in the same scope with similarity >= .55, most similar first; limit None returns all."""
+    pairs=[];by_scope={}
+    for p in policies:by_scope.setdefault(p['scope'],[]).append((norm(p['title']),p))
+    for group in by_scope.values(): # central programs and local additions stay separate
+        matcher=SequenceMatcher(autojunk=False)
+        for j,(title_b,b) in enumerate(group):
+            matcher.set_seq2(title_b)
+            for title_a,a in group[:j]:
+                matcher.set_seq1(title_a)
+                # Cheap upper bounds first: the whole catalog has millions of pairs.
+                if matcher.real_quick_ratio()>=.55 and matcher.quick_ratio()>=.55:
+                    similarity=matcher.ratio()
+                    if similarity>=.55:pairs.append((similarity,a,b))
+    pairs.sort(key=lambda x:-x[0])
+    return pairs if limit is None else pairs[:limit]
 
 DEDUP_PROMPT='''이음온 정책 중복 검토. 두 공개 원문을 비교해 JSON만 출력.
 relation은 same(같은 사업 안내), supplement(추가지원), different(별개), uncertain 중 하나.
@@ -342,12 +350,18 @@ relation은 same(같은 사업 안내), supplement(추가지원), different(별�
 "evidence_a":{"field":"v0.target","quote":"첫 원문의 실제 인용"},
 "evidence_b":{"field":"v0.target","quote":"둘째 원문의 실제 인용"},"reason":"짧은 설명"}.'''
 
-def semantic_merge(policies,allow_network=True):
-    work=copy.deepcopy(policies);related=[]
-    for _,a,b in dedup_candidates(work):
+def semantic_merge(policies,allow_network=True,limit=12,llm_limit=None):
+    """Merge AI-confirmed duplicates. Groups are combined in policy-ID order, so the merged text and its
+    analysis fingerprint do not depend on the order the policies arrived in."""
+    work=copy.deepcopy(policies);related=[];same={}
+    pairs=dedup_candidates(work,limit)
+    # With a call budget (the batch), pairs involving senior programs get the new LLM decisions first.
+    if llm_limit is not None:pairs.sort(key=lambda x:(not (x[1]['senior'] or x[2]['senior']),-x[0]))
+    for _,a,b in pairs:
         key='dedup:'+':'.join(sorted([fingerprint(a),fingerprint(b)]))
         decision=cache_get(key)
-        if not decision and allow_network:
+        if not decision and allow_network and (llm_limit is None or llm_limit>0):
+            if llm_limit is not None:llm_limit-=1
             try:
                 decision=chat_json(DEDUP_PROMPT,{'a':documents(a),'b':documents(b)},1000)
                 if decision.get('relation') not in ('same','supplement','different','uncertain'):continue
@@ -356,13 +370,27 @@ def semantic_merge(policies,allow_network=True):
             except Exception:continue
         if not decision:continue
         related.append({'a':a['id'],'b':b['id'],'relation':decision['relation'],'reason':str(decision.get('reason',''))[:300]})
-        ia=next((i for i,p in enumerate(work) if p['id']==a['id']),None)
-        ib=next((i for i,p in enumerate(work) if p['id']==b['id']),None)
-        if decision['relation']=='same' and ia is not None and ib is not None:
-            combined=combine(work[ia],work[ib],'AI 원문 비교: '+str(decision.get('reason',''))[:200])
+        if decision['relation']=='same':same[tuple(sorted((a['id'],b['id'])))]=decision
+    parent={}
+    def root(x):
+        while parent.get(x,x)!=x:x=parent[x]
+        return x
+    for a,b in same:
+        ra,rb=root(a),root(b)
+        if ra!=rb:parent[max(ra,rb)]=min(ra,rb)
+    groups={}
+    for p in work:groups.setdefault(root(p['id']),[]).append(p)
+    out=[]
+    for p in work:
+        members=sorted(groups[root(p['id'])],key=lambda x:x['id'])
+        if p['id']!=members[0]['id']:continue # emitted at the position of its smallest-ID member
+        combined=members[0]
+        for other in members[1:]:
+            decision=next(d for pair,d in sorted(same.items()) if other['id'] in pair)
+            combined=combine(combined,other,'AI 원문 비교: '+str(decision.get('reason',''))[:200])
             if decision.get('contradictory'):combined['conflicts'].append('중복 출처의 대상·혜택·기간이 상충해요.')
-            work[ia]=combined;work.pop(ib)
-    return work,related
+        out.append(combined)
+    return out,related
 
 MATCH_PROMPT='''이음온 사용자 조건 대조 설명기. 정책 원문과 사용자 정보를 실제로 대조해 충족/미충족/미확인을 판단하고 설명한다.
 state는 match/mismatch/unknown. 한 필수조건이라도 사용자정보가 없거나 불명확하면 unknown, 명시적 필수조건 미충족이면 mismatch.

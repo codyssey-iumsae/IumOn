@@ -1,29 +1,14 @@
 """Narrative intake and source-grounded preparation; no persistent personal data."""
 from llm import chat_json
 from engine import unresolved,application_access,TOWNS
-from analysis import cache_get,cache_set
-import os
 import re
 
 # Only the office name is given: no 읍·면 office phone number or address has been verified.
 OFFICE=re.compile(r'읍[·ㆍ.]?면|행정복지센터|주민센터|읍사무소|면사무소')
 
 def official_documents(policy):
-    refs=[r for r in policy['sources'] if r['source']=='gov']
-    if not refs or not os.getenv('DATA_GO_KR_KEY'):return []
-    ref=refs[0]
-    key='gov-detail:'+ref['id']+':'+policy.get('updated','')
-    detail=cache_get(key)
-    if detail is None:
-        try:
-            from collect import fetch
-            result=fetch('https://api.odcloud.kr/api/gov24/v3/serviceDetail',
-                         {'page':1,'perPage':1,'cond[서비스ID::EQ]':ref['id']})
-            detail=next((r for r in result.get('data',[]) if str(r.get('서비스ID'))==ref['id']),{})
-            if detail:cache_set(key,'public_detail',detail)
-        except Exception:return []
-    value=detail.get('구비서류')
-    return [{'text':str(value),'source':[ref],'field':'정부24 상세.구비서류'}] if value else []
+    # Collected by the daily batch from 정부24 serviceDetail; no public API call at request time.
+    return list(policy.get('official_documents') or [])
 
 TOPICS={'생활비','건강','돌봄','주거','일자리','이동'}
 
