@@ -386,6 +386,13 @@ class BatchPipelineTests(unittest.TestCase):
                 self.assertTrue(batch.due(today))
                 self.assertFalse(batch.due(today.replace(hour=3)))
         with patch.dict('os.environ',{'AUTO_REFRESH':'0','DATA_GO_KR_KEY':'k'}):self.assertFalse(batch.due(today))
+    def test_scheduled_llm_limit_accepts_all(self):
+        cases={'all':(True,0),'ALL':(True,0),'50':(True,50),'0':(False,0),'-1':(False,0),'abc':(True,100)}
+        for value,(analyzes,limit) in cases.items():
+            with self.subTest(value=value),patch.dict('os.environ',{'BATCH_LLM_LIMIT':value}),patch('batch.run') as run:
+                batch.run_scheduled()
+                stages,kwargs=run.call_args.args[0],run.call_args.kwargs
+                self.assertEqual(('analyze' in stages,kwargs['llm_limit']),(analyzes,limit))
     def test_batch_publishes_and_analyzes_with_limit(self):
         rows=[{'servId':f'N{i}','servNm':f'노인 지원 {i}','lastModYmd':'20261101'} for i in range(3)]
         with db.connect() as conn:
