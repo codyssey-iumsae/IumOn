@@ -59,5 +59,3 @@ footer{font-size:13px;line-height:1.85}
 /* 주요 버튼·활성 메뉴를 옅은 초록으로 (흰글씨 대신 진초록 글씨 + 경계 테두리) */
 .primary{background:#d5f3d8;color:#1f5e2e;border:1px solid #add9b6}
 .primary:hover{background:#c6ecd0;color:#184c24}
-.nav-item.active{background:#d5f3d8;color:#246c33}
-.mobile-nav button.active{color:#246c33}
