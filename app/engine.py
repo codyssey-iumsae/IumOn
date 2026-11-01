@@ -402,7 +402,7 @@ def assess(p,profile,analysis=None):
     p=copy.deepcopy(p)
     excluded=audience_exclusion(p,profile)
     if excluded:
-        return {**p,'group':'excluded','status':'학생 대상 지원 · 본인 추천 범위 밖','analysis_state':'audience_excluded',
+        return {**p,'group':'excluded','status':'학생 대상 지원 · 본인 추천 범위 밖','analysis_state':'audience_excluded','audience_state':'other',
                 'eligibility_state':'unknown','major_conditions_state':'unknown','region_fit':region_fit(p,profile.get('town')),
                 'tree':{'state':'unknown','label':excluded},'checks':[],'reasons':[excluded],
                 'access':application_access([],profile),'period_status':{'state':'unknown','label':'접수기간 확인 필요'},

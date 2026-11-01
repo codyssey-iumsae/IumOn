@@ -97,11 +97,13 @@ class GroundedTests(unittest.TestCase):
         r=assess(policy(),PROFILE,analysis(senior_possible=False,audience_evidence=None,eligibility={'op':'unknown','label':'수급 여부 확인'}))
         self.assertNotEqual(r['group'],'excluded')
     def test_quoted_other_audience_leaves_main_list_with_quote(self):
-        p=policy(title='고등학교생 무상급식 지원',target='관내 고등학교 재학생')
-        a=analysis(senior_possible=False,audience_evidence=evidence(quote='고등학교 재학생'),eligibility={'op':'unknown','label':'재학 여부'})
+        p=policy(title='영양 지원',target='관내 임산부 및 출산 후 6개월 이내 산모')
+        a=analysis(senior_possible=False,audience_evidence=evidence(quote='관내 임산부'),eligibility={'op':'unknown','label':'임신 여부'})
         r=assess(p,PROFILE,a)
         self.assertEqual((r['group'],r['audience_state'],r['eligibility_state']),('excluded','other','unknown'))
-        self.assertIn('고등학교 재학생',r['reasons'][0])
+        self.assertIn('관내 임산부',r['reasons'][0])
+        school=assess(policy(title='고등학교생 무상급식 지원',target='관내 고등학교 재학생'),PROFILE,a)
+        self.assertEqual((school['group'],school['audience_state']),('excluded','other'))  # PR #17's school rule
         self.assertEqual([p['id'] for p in finalize([r,assess(policy(id='b',title='가 건강 지원'),PROFILE,analysis(complete=False))],PROFILE)],['b','gov-x'])
     def test_loan_not_compared_as_cash_grant(self):
         self.assertEqual(validate_analysis(analysis(),policy(title='노후긴급자금 대부사업'))['benefit']['kind'],'loan')
@@ -331,10 +333,10 @@ class BatchPipelineTests(unittest.TestCase):
             self.assertEqual(model.call_count,1)
         self.assertEqual(db.demand(),{})
     def test_other_audience_gives_its_review_slot_to_next_candidate(self):
-        student=[policy(id=f'gov-s{i}',title=f'건강 지원 학생 {i}',target='고등학교 재학생',sources=[{'source':'gov','label':'정부24','id':f's{i}'}]) for i in range(6)]
+        student=[policy(id=f'gov-s{i}',title=f'건강 지원 {i}',target='만 6세 미만 영유아',sources=[{'source':'gov','label':'정부24','id':f's{i}'}]) for i in range(6)]
         senior=policy(id='gov-z',title='건강 일자리',topics=['일자리'],sources=[{'source':'gov','label':'정부24','id':'z'}])
         self.publish(student+[senior])
-        for p in student:cache_set(fingerprint(p),'policy',analysis(senior_possible=False,audience_evidence=evidence(quote='고등학교 재학생')))
+        for p in student:cache_set(fingerprint(p),'policy',analysis(senior_possible=False,audience_evidence=evidence(quote='만 6세 미만 영유아')))
         cache_set(fingerprint(senior),'policy',analysis())
         with patch('analysis.chat_json',side_effect=AssertionError('no live analysis expected')):
             job=self.run_job()
