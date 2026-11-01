@@ -65,3 +65,4 @@ Thumbs.db
 *.swo
 .idea/
 
+.deploy-compose-path

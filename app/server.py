@@ -126,6 +126,10 @@ async def protect(request:Request,call_next):
     if request.url.path.startswith('/api'):response.headers['Cache-Control']='no-store'
     return response
 
+@app.get('/api/health')
+def health():
+    return {'status':'ok'}
+
 @app.get('/api/status')
 def status():
     _,meta=load_catalog()
