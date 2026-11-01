@@ -4,6 +4,19 @@
 
 대상은 **충남 청양군 만 65세 이상 주민**입니다. 현재 음성 입력·읽어주기를 지원하는 PWA이며 네이티브 앱 패키징은 후속 단계입니다.
 
+## 배포 주소
+
+**https://accurately-because-paintings-influenced.trycloudflare.com/**
+
+| 항목 | 내용 |
+| --- | --- |
+| 화면 | 위 주소 접속 (휴대폰·PC 브라우저, PWA 설치 가능) |
+| 상태 확인 | [/api/health](https://accurately-because-paintings-influenced.trycloudflare.com/api/health) → `{"status":"ok"}` |
+| 자료 현황 | [/api/status](https://accurately-because-paintings-influenced.trycloudflare.com/api/status) → 버전·LLM 연결 여부·수집 시각·자료 개수 |
+| 확인 시점 | 2026-11-01: 버전 0.4.0, LLM 연결됨(gpt-5.4-mini), 정부24 10,942개·중앙부처 461개·충남 지자체 337개 수집, 추천 후보 1,338개 게시 |
+
+Cloudflare **Quick Tunnel** 주소이므로 서버에서 tunnel 컨테이너를 다시 만들면 주소가 바뀝니다. 접속이 안 되면 서버의 터널 로그에서 새 주소를 확인하고 이 절을 갱신합니다([Docker 배포](#docker-배포-공개-시연) 참고). 시연용 주소이며 고정 운영 주소나 가용성을 보장하지 않습니다.
+
 ## 서비스 흐름
 
 생활 이야기 → 어려움 확인 → 필요한 도움 선택 → 관련 상황 질문 → 나이·거주 읍면 → 정책별 추가 질문 → 정책 후보·원문 설명 → 상담·신청 준비.
@@ -23,29 +36,31 @@
 | 검색 | 글자 겹침·동의어 표 + LLM 정책 검색어. 선택적으로 사설망 GPU BGE-M3 벡터 검색 결합 |
 | 검증·협업 | unittest, JavaScript 문법 검사, GitHub Actions, Dependabot |
 | 실행 | PowerShell 통합 스크립트, Windows 배치 파일 |
-| 시연 배포 | Docker Compose, Cloudflare Quick Tunnel |
+| 시연 배포 | Docker Compose, Cloudflare Quick Tunnel, systemd timer 자동 배포 |
+| GPU 임베딩(선택) | 별도 GPU 서버의 FastAPI + sentence-transformers BGE-M3 (`gpu/`) |
 
 소형모델은 아직 학습하지 않았으며 조건 추출·중복 비교·맞춤 설명 역할을 LLM이 대신합니다.
 
 ## 웹 사용 방법
 
-1. 아래 서버 실행 절차를 완료합니다. 이후 PC에서는 **실행.bat**으로 서버를 켤 수 있습니다.
-2. 같은 PC 브라우저에서 http://127.0.0.1:8765 에 접속합니다. 공개 시연 주소는 아래 Docker 배포 절을 참고합니다.
-3. AI 전송 동의를 확인하고 생활 이야기를 입력합니다. 이해한 어려움을 확인하고 필요한 도움을 선택합니다.
-4. 질문에 답하고 후보의 조건·혜택·공식 출처를 확인합니다. 모르는 답은 건너뜁니다.
+1. 브라우저에서 배포 주소 https://accurately-because-paintings-influenced.trycloudflare.com/ 에 접속합니다. 설치나 로그인은 필요 없습니다.
+   - 직접 서버를 띄워 쓰려면 아래 서버 실행 절차를 완료한 뒤 같은 PC에서 http://127.0.0.1:8765 에 접속합니다. Windows에서는 이후 **실행.bat**으로 서버를 켜고 **앱 열기.url**로 화면을 엽니다.
+2. 생활 이야기로 시작하려면 AI 전송 동의를 확인하고 이야기를 입력합니다. 이해한 어려움을 확인하고 필요한 도움을 선택합니다. AI에 보내고 싶지 않으면 선택 질문으로 시작합니다.
+3. 나이·거주 읍·면과 관련 상황 질문에 답합니다.
+4. 정책별 추가 질문에 답하고 후보의 조건·혜택·공식 출처를 확인합니다. 모르는 답은 ‘잘 모르겠어요’로 남깁니다. 결과는 ‘확인한 주요 조건이 맞아요·몇 가지 더 확인해요·신청에 도움이 필요해요·이미 받고 있는 혜택·현재 조건과 맞지 않아요’로 묶여 표시됩니다.
 5. 상담·신청 준비 화면에서 신청 경로·서류·문의처를 확인하고 필요하면 메모를 저장합니다.
 
-서버 창을 닫거나 Ctrl+C를 누르면 종료됩니다. 새로고침 시 답변·대화가 초기화되므로 필요한 메모는 먼저 저장하세요.
+새로고침 시 답변·대화가 초기화되므로 필요한 메모는 먼저 저장하세요. 직접 띄운 서버는 서버 창을 닫거나 Ctrl+C를 누르면 종료됩니다.
 
 ## 앱 사용 방법 (PWA)
 
-현재 APK·IPA나 앱스토어 배포판은 없습니다. **휴대폰에서 접속할 수 있는 HTTPS 주소로 배포한 뒤** 홈 화면에 설치합니다. 휴대폰의 127.0.0.1은 PC 서버를 가리키지 않습니다.
+현재 APK·IPA나 앱스토어 배포판은 없습니다. HTTPS 배포 주소 https://accurately-because-paintings-influenced.trycloudflare.com/ 에서 홈 화면에 설치합니다. 휴대폰의 127.0.0.1은 PC 서버를 가리키지 않으므로 휴대폰에서는 배포 주소를 사용합니다.
 
 - Android: Chrome에서 배포 주소 접속 → 메뉴 → 앱 설치/홈 화면에 추가 → 이음온 아이콘 실행.
 - iPhone: Safari에서 배포 주소 접속 → 공유 → 홈 화면에 추가 → 이음온 아이콘 실행.
-- PC: 지원 브라우저에서 배포 주소 접속 → 주소창/메뉴의 설치 기능 사용.
+- PC: Chrome·Edge에서 배포 주소 접속 → 주소창/메뉴의 설치 기능 사용.
 
-메뉴·지원 여부는 브라우저마다 다릅니다. 설치 후 문답·정책 확인·신청 준비는 웹과 같습니다. 글자·음성 입력과 선택 버튼을 함께 사용할 수 있습니다. 정책 조회·AI 분석에는 인터넷과 실행 중인 서버가 필요하며 설치만으로 오프라인 추천이 되지는 않습니다.
+Quick Tunnel 주소가 바뀌면 설치한 아이콘은 이전 주소를 열어 동작하지 않습니다. 이때는 새 배포 주소에서 다시 설치합니다. 메뉴·지원 여부는 브라우저마다 다릅니다. 설치 후 문답·정책 확인·신청 준비는 웹과 같습니다. 글자·음성 입력과 선택 버튼을 함께 사용할 수 있습니다. 정책 조회·AI 분석에는 인터넷과 실행 중인 서버가 필요하며 설치만으로 오프라인 추천이 되지는 않습니다.
 
 ## 음성으로 사용하기
 
@@ -150,7 +165,14 @@ cat /home1/ncloud/iumon-deployed-sha
 
 첫 자동 배포가 성공하기 전에는 SHA 기록 파일이 없습니다. 평소 코드 갱신은 `main` 반영으로 진행하며, 자동 배포 후 서버 소스는 detached HEAD이므로 서버에서 `git pull`로 갱신하지 않습니다. 자동 배포를 멈추려면 `sudo systemctl stop iumon-deploy.timer`, 다시 켜려면 `sudo systemctl start iumon-deploy.timer`를 실행합니다. 앱 설정 파일만 바꾼 경우에는 서버에서 `sudo docker compose --profile demo up -d --no-deps --force-recreate app`으로 앱을 다시 생성합니다.
 
-시연 주소는 터널 로그에 나오는 trycloudflare.com 주소입니다. 터널을 다시 만들면 주소가 바뀌므로 바뀐 주소는 터널 로그에서 확인합니다. 앱만 재시작할 때는 tunnel을 다시 만들지 않아도 됩니다. 앱 컨테이너는 healthcheck와 Docker 자동 시작을 사용합니다.
+현재 시연 주소는 **https://accurately-because-paintings-influenced.trycloudflare.com/** 입니다(2026-11-01 확인). 터널을 다시 만들면 주소가 바뀌므로 바뀐 주소는 터널 로그에서 확인하고 README의 [배포 주소](#배포-주소)를 갱신합니다. 앱만 재시작·자동 배포할 때는 tunnel을 다시 만들지 않으므로 주소가 유지됩니다.
+
+~~~sh
+# 현재 Quick Tunnel 주소 확인
+sudo docker compose logs tunnel | grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' | tail -1
+# 외부에서 상태 확인
+curl -s https://accurately-because-paintings-influenced.trycloudflare.com/api/health
+~~~ 앱 컨테이너는 healthcheck와 Docker 자동 시작을 사용합니다.
 
 2026-10-31 수동 배포 시 다음을 확인했습니다. 아래 정책 자료 개수와 실제 LLM·외부 HTTPS 검증은 해당 시점 기록이며, 자동 배포마다 수행하는 검사는 아닙니다.
 
