@@ -403,4 +403,20 @@ class BatchPipelineTests(unittest.TestCase):
             batch.analyze(1,workers=1)
         self.assertEqual((seen,db.demand()),(['나 지원'],{}))
 
+class SearchTermTests(unittest.TestCase):
+    """LLM search terms widen retrieval only; they never decide eligibility."""
+    def test_story_keeps_clean_search_terms(self):
+        raw={'issues':[{'label':'집 수리가 필요해요','topic':'주거','evidence':'비가 새요',
+                        'terms':['주택개보수','집수리','x'*30,'<script>',3,'집수리']}]}
+        with patch('journey.chat_json',return_value=raw):
+            issue=understand_story('집이 낡아서 비가 새요.')['issues'][0]
+        self.assertEqual(issue['terms'],['주택개보수','집수리'])
+    def test_missing_terms_are_empty(self):
+        with patch('journey.chat_json',return_value={'issues':[{'label':'이동비 부담','topic':'이동','evidence':'택시비'}]}):
+            self.assertEqual(understand_story('택시비가 부담돼요.')['issues'][0]['terms'],[])
+    def test_intake_uses_terms_of_focused_issue_only(self):
+        issues=[{'label':'집이 낡았어요','topic':'주거','terms':['주택개보수']},{'label':'끼니','topic':'돌봄','terms':['도시락','<x>']}]
+        self.assertEqual(intake_plan(issues,'1',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['도시락'])
+        self.assertEqual(intake_plan(issues,'all',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['주택개보수','도시락'])
+
 if __name__=='__main__':unittest.main(verbosity=2)
