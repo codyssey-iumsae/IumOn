@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from config import ROOT
 from analysis import analyze
-from engine import load_catalog,retrieve,assess,finalize,personalize,next_questions,GROUPS,TOWNS
+from engine import load_catalog,retrieve,assess,finalize,personalize,next_questions,other_audience,GROUPS,TOWNS
 import batch
 import db
 from llm import configured,chat_json,ModelRejected,ModelUnavailable
@@ -159,10 +159,14 @@ def run_recommendation(token,request):
     try:
         profile=request.profile.model_dump()
         catalog,meta=load_catalog()
-        chosen=retrieve(catalog,profile)[:request.limit]
+        # Policies the stored analysis quotes as being for someone else (고등학생, 영유아…) give their slots
+        # to the next candidates; the review size stays request.limit.
+        pool=retrieve(catalog,profile)[:request.limit*3]
+        stored={p['id']:analyze(p,allow_network=False) for p in pool}
+        chosen=sorted(pool,key=lambda p:bool(other_audience(stored[p['id']])))[:request.limit]
         update_job(token,stage='정책 원문 분석 결과를 불러오고 있어요.',total=len(chosen),done=0)
         # The daily batch pre-analyzes policies; read those first so most requests make no LLM call.
-        analyses={p['id']:analyze(p,allow_network=False) for p in chosen}
+        analyses={p['id']:stored[p['id']] for p in chosen}
         missing=[p for p in chosen if not analyses[p['id']]]
         analysis_errors={}
         done=len(chosen)-len(missing)

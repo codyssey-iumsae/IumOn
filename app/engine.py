@@ -301,6 +301,11 @@ def application_period(p,a,today=None):
     if app.get('state')=='always':return {'state':'always','label':'원문상 상시 접수 · 예산 확인 필요'}
     return {'state':'unknown','label':'접수기간 확인 필요'}
 
+def other_audience(analysis):
+    """Source quote when the analysis judged, with a verified quote, that a 65+ resident is not the audience."""
+    if not analysis or analysis.get('senior_possible') is not False:return None
+    return (analysis.get('audience_evidence') or {}).get('quote')
+
 def assess(p,profile,analysis=None):
     p=copy.deepcopy(p)
     excluded=audience_exclusion(p,profile)
@@ -337,7 +342,6 @@ def assess(p,profile,analysis=None):
     if p.get('conflicts'):
         tree={'state':'unknown','op':'all','label':'출처 간 조건 확인 필요',
               'children':[tree,*[{'state':'unknown','label':x} for x in p['conflicts']]]}
-    # An LLM audience label is a retrieval hint, never sufficient proof of ineligibility.
     access=application_access(a['routes'],profile)
     period=application_period(p,a)
     eligibility='mismatch' if tree['state']=='mismatch' else 'match' if tree['state']=='match' else 'unknown'
@@ -345,6 +349,10 @@ def assess(p,profile,analysis=None):
     if group=='matched' and access['state']=='assistance':group='assistance'
     # A barrier never changes eligibility or priority; it is a separate label/group.
     if period['state']=='closed':group='excluded'
+    # The analysis quoted the source to say the program is for someone else (e.g. 고등학생, 영유아). That is
+    # moved out of the main list with the quote shown, never hidden; eligibility itself stays as evaluated.
+    audience=other_audience(a)
+    if audience:group='excluded'
     if profile.get('pension')=='yes' and re.fullmatch(r'기초연금(?:지급|지원|지원사업)?',norm(p['title'])):
         group='receiving'
     b=a['benefit']
@@ -355,11 +363,12 @@ def assess(p,profile,analysis=None):
     if tier==0:reasons.append('말씀하신 어려움과 직접 관련된 사업이에요.')
     elif tier==1:reasons.append('말씀하신 어려움과 관련 있는 사업이에요.')
     elif related:reasons.append('필요한 도움('+'·'.join(related)+')과 관련 있어요.')
+    if audience:reasons.insert(0,f'원문상 지원 대상이 어르신이 아닐 수 있어요: "{audience[:80]}"')
     if fit=='here':reasons.append(f'{town} 주민을 위한 사업이에요.')
     elif fit=='elsewhere':reasons.append(f'원문에 {named}이 적혀 있어 {town} 주민도 대상인지 확인해야 해요.')
     reasons.append('확인한 조건은 맞지만 미확인 조건을 더 살펴봐야 해요.' if eligibility=='unknown'
                    else '입력한 정보와 추출한 주요 조건이 맞아요.' if eligibility=='match' else '맞지 않는 조건 또는 접수 마감을 확인했어요.')
-    return {**p,'topics':topics,'group':group,'status':GROUPS[group],
+    return {**p,'topics':topics,'group':group,'status':GROUPS[group],'audience_state':'other' if audience else 'fits',
         'eligibility_state':eligibility,'major_conditions_state':major_state,'analysis_state':'grounded','tree':tree,'checks':leaves(tree),
         'benefit_info':b,'access':access,'period_status':period,'reasons':reasons,
         'analysis_notes':a['notes'],'score':None,'analysis_model':'gpt-5.4-mini'}
