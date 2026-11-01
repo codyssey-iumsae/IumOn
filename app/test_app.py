@@ -1,7 +1,12 @@
 import copy
+import time
 import unittest
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch
-from analysis import validate_analysis,validate_tree,valid_evidence,money_in_quote,documents,fingerprint
+from analysis import validate_analysis,validate_tree,valid_evidence,money_in_quote,documents,fingerprint,cache_set
+import batch
+import db
 from engine import create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
 from server import Profile,RecommendRequest,QUESTION_BANK,BASIC_QUESTIONS,status
 from journey import understand_story,prepare,intake_plan
@@ -282,5 +287,120 @@ class GroundedTests(unittest.TestCase):
         self.assertIn('정산면 행정복지센터',r['next_action'])
         self.assertEqual(prepare(assess(office,PROFILE,analysis()),PROFILE)['office'],'주소지 읍·면 행정복지센터')
         self.assertIsNone(prepare(assess(policy(),user,analysis()),user)['office'])
+
+class BatchPipelineTests(unittest.TestCase):
+    """Daily batch writes the store; requests only read it. Each test uses its own temporary database."""
+    def setUp(self):
+        import tempfile,engine
+        self.tmp=tempfile.TemporaryDirectory()
+        self.patches=[patch('db.PATH',Path(self.tmp.name)/'iumon.sqlite3'),patch('batch._migrated',True),
+                      patch('batch.LOCK',Path(self.tmp.name)/'.refresh.lock')]
+        for x in self.patches:x.start()
+        engine._load.cache_clear()
+    def tearDown(self):
+        import engine
+        for x in self.patches:x.stop()
+        engine._load.cache_clear();self.tmp.cleanup()
+    def publish(self,policies,relations=()):
+        with db.connect() as conn:
+            run_id=db.start_run(conn);db.publish(conn,run_id,policies,list(relations),{'collected_at':'2026-11-01T00:00:00+00:00','errors':[],'sources':{},'counts':{}})
+        return run_id
+    def test_recommendation_and_preparation_never_use_network(self):
+        import server
+        docs=[{'text':'신청서 1부','source':[{'source':'gov','label':'정부24','id':'x'}],'field':'정부24 상세.구비서류'}]
+        self.publish([policy(official_documents=docs)])
+        offline=AssertionError('network used during a request')
+        with patch('urllib.request.urlopen',side_effect=offline),patch('engine.chat_json',side_effect=offline), \
+             patch('analysis.chat_json',side_effect=offline):
+            body=RecommendRequest(profile=PROFILE,consent=False,limit=6)
+            server._jobs['t']={'state':'running','created':time.monotonic()}
+            server.run_recommendation('t',body)
+            job=server._jobs.pop('t')
+            self.assertEqual(job['state'],'done')
+            p=job['result']['policies'][0]
+            self.assertEqual((p['analysis_state'],job['result']['meta']['analysis_failed']),('pending',1))
+            self.assertEqual(prepare(p,PROFILE,fetch_documents=True)['documents'],docs)
+        self.assertEqual(db.demand(),{'gov-x':1})
+    def test_stored_analysis_is_used_without_network(self):
+        import server
+        self.publish([policy()])
+        cache_set(fingerprint(policy()),'policy',analysis())
+        with patch('urllib.request.urlopen',side_effect=AssertionError),patch('analysis.chat_json',side_effect=AssertionError):
+            server._jobs['t']={'state':'running','created':time.monotonic()}
+            server.run_recommendation('t',RecommendRequest(profile=PROFILE,limit=6))
+            p=server._jobs.pop('t')['result']['policies'][0]
+        self.assertEqual(p['analysis_state'],'grounded')
+    def test_failed_publish_keeps_previous_catalog(self):
+        first=self.publish([policy()])
+        with self.assertRaises(KeyError):
+            with db.connect() as conn:
+                run_id=db.start_run(conn);db.publish(conn,run_id,[policy(id='new')],[{'a':'x'}],{})
+        catalog,meta=load_catalog()
+        self.assertEqual((meta['run_id'],[p['id'] for p in catalog]),(first,['gov-x']))
+    def test_failed_or_empty_source_keeps_previous_rows(self):
+        with db.connect() as conn:
+            for name,_,_ in batch.SOURCES:db.replace_source(conn,name,[{'서비스ID':'old','servId':'old'}],'servId')
+        client=type('Client',(),{'gov':staticmethod(lambda ep:[] if ep=='serviceList' else [{'서비스ID':'new'}]),
+                                 'welfare':staticmethod(lambda local=False:(_ for _ in ()).throw(RuntimeError('down')))})
+        with patch.dict('sys.modules',{'collect':client}):batch.collect()
+        with db.connect() as conn:rows,status=db.source_rows(conn),db.source_status(conn)
+        self.assertEqual(rows['gov_list'][0]['서비스ID'],'old');self.assertEqual(rows['gov_detail'][0]['서비스ID'],'new')
+        self.assertEqual(rows['national'][0]['servId'],'old')
+        self.assertEqual({k:v['state'] for k,v in status.items()},
+                         {'gov_list':'stale','gov_conditions':'ok','gov_detail':'ok','national':'stale','local':'stale'})
+    def test_detail_requests_respect_daily_budget(self):
+        rows=[{'servId':f'N{i}','servNm':f'노인 지원 {i}','lastModYmd':'20261101'} for i in range(10)]
+        with db.connect() as conn:db.replace_source(conn,'national',rows,'servId')
+        calls=[]
+        client=type('Client',(),{'detail':staticmethod(lambda source,sid:calls.append(sid) or {'servId':sid})})
+        with patch.dict('sys.modules',{'collect':client}),patch.dict('os.environ',{'NATIONAL_DETAIL_DAILY_BUDGET':'9'}):
+            batch.details();batch.details()
+        self.assertEqual(len(calls),3)
+    def test_official_documents_do_not_change_analysis_fingerprint(self):
+        p=policy();before=fingerprint(p)
+        batch.attach_official_documents([p],[{'서비스ID':'x','구비서류':'신청서'}])
+        self.assertEqual((p['official_documents'][0]['text'],fingerprint(p)),('신청서',before))
+    def test_ai_merge_is_independent_of_input_order(self):
+        a=policy(id='gov-a',title='어르신 건강 지원');b=policy(id='gov-b',title='어르신 건강지원사업',benefit='월 3만원')
+        with patch('engine.cache_get',return_value={'relation':'same','reason':'같은 사업'}):
+            one,_=semantic_merge([a,b],False,None);two,_=semantic_merge([b,a],False,None)
+        self.assertEqual((len(one),one[0]['id'],fingerprint(one[0])),(1,two[0]['id'],fingerprint(two[0])))
+    def test_daily_schedule(self):
+        kst=batch.KST;today=datetime(2026,11,2,5,tzinfo=kst)
+        with patch.dict('os.environ',{'DATA_GO_KR_KEY':'k','AUTO_REFRESH':'1','BATCH_HOUR':'4'}), \
+             patch('db.active_run',return_value=(1,{})):
+            with patch('db.last_attempt',return_value=('2026-11-01T19:30:00+00:00','published')):
+                self.assertFalse(batch.due(today))  # already ran at 04:30 KST today
+            with patch('db.last_attempt',return_value=('2026-11-01T10:00:00+00:00','published')):
+                self.assertTrue(batch.due(today))
+                self.assertFalse(batch.due(today.replace(hour=3)))
+        with patch.dict('os.environ',{'AUTO_REFRESH':'0','DATA_GO_KR_KEY':'k'}):self.assertFalse(batch.due(today))
+    def test_batch_publishes_and_analyzes_with_limit(self):
+        rows=[{'servId':f'N{i}','servNm':f'노인 지원 {i}','lastModYmd':'20261101'} for i in range(3)]
+        with db.connect() as conn:
+            db.replace_source(conn,'national',rows,'servId');db.set_source_status(conn,'national','ok',rows=3)
+        with patch('analysis.chat_json',return_value=analysis()):
+            batch.run(('publish','analyze'),llm_limit=2,dedup_limit=0)
+        catalog,meta=load_catalog()
+        self.assertEqual((len(catalog),meta['counts']),(3,{'national':3}))
+        self.assertEqual(len(db.analyzed_keys()),2)
+        self.assertFalse(batch.LOCK.exists())
+    def test_rejected_key_stops_analysis_without_blaming_policies(self):
+        from llm import ModelRejected
+        rows=[{'servId':f'N{i}','servNm':f'노인 지원 {i}','lastModYmd':'20261101'} for i in range(5)]
+        with db.connect() as conn:db.replace_source(conn,'national',rows,'servId')
+        with patch('analysis.chat_json',side_effect=ModelRejected('denied',403)) as model:
+            result=batch.run(('publish',),dedup_limit=0) or batch.analyze(5,workers=1)
+        self.assertTrue(result['rejected']);self.assertEqual(db.failures(),{})
+        self.assertLess(model.call_count,5)
+    def test_merged_policy_is_analyzed_first_with_inherited_demand(self):
+        merged=policy(id='gov-a',title='나 지원',merge_reason='AI 원문 비교: 같은 사업',senior=False,
+                      sources=[{'source':'gov','label':'정부24','id':'a'},{'source':'national','label':'복지로','id':'b'}])
+        self.publish([policy(id='gov-z',title='가 지원'),merged])
+        db.record_demand(['national-b'])
+        seen=[]
+        with patch('analysis.chat_json',side_effect=lambda *a,**k:seen.append(a[1]['title']) or analysis()):
+            batch.analyze(1,workers=1)
+        self.assertEqual((seen,db.demand()),(['나 지원'],{}))
 
 if __name__=='__main__':unittest.main(verbosity=2)
