@@ -5,7 +5,7 @@
       <feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-color="#2F1F4F" flood-opacity="0.18"/>
     </filter>
   </defs>
-  <rect x="1" y="1" width="238" height="238" rx="56" fill="#FAF8F2" stroke="#E3DBE6" stroke-width="2"/>
+  <rect x="1" y="1" width="238" height="238" rx="56" fill="#2F1F4F"/>
   <g transform="translate(20,20)" filter="url(#paper)">
     <path d="M100,170 C99,180 99,188 100,196" fill="none" stroke="#8C8A2E" stroke-width="7" stroke-linecap="round"/>
     <g transform="translate(97,170) rotate(-23)">
@@ -17,7 +17,7 @@
       <path d="M0,-6 Q3,-60 0,-108" fill="none" stroke="#FAF8F2" stroke-opacity="0.45" stroke-width="3" stroke-linecap="round"/>
     </g>
     <g clip-path="url(#leafA)">
-      <path d="M0,0 C54,-40 54,-86 0,-118 C-54,-86 -54,-40 0,0 Z" transform="translate(103,170) rotate(23)" fill="#2F1F4F"/>
+      <path d="M0,0 C54,-40 54,-86 0,-118 C-54,-86 -54,-40 0,0 Z" transform="translate(103,170) rotate(23)" fill="#FAF8F2"/>
     </g>
     <circle cx="100" cy="46" r="10" fill="#D9B452"/>
   </g>

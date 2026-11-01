@@ -19,7 +19,7 @@
 | 앱 | Manifest·Service Worker 기반 PWA |
 | LLM | Codyssey OpenAI 호환 Chat Completions, 기본 gpt-5.4-mini |
 | 외부 통신 | Python urllib.request, JSON·XML 파싱 |
-| 저장 | 공개 정책 JSON·상세 캐시, SQLite 정책 분석 캐시 |
+| 저장 | SQLite 한 파일(iumon.sqlite3): 공공 원본·게시 카탈로그·정책 분석 캐시 |
 | 검증·협업 | unittest, JavaScript 문법 검사, GitHub Actions, Dependabot |
 | 실행 | PowerShell 통합 스크립트, Windows 배치 파일 |
 | 시연 배포 | Docker Compose, Cloudflare Quick Tunnel |
@@ -77,7 +77,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/iumon.ps1 start
 | LLM_BASE_URL | 연결 예: https://copa.codyssey.kr/v1 |
 | LLM_MODEL | 기본 gpt-5.4-mini |
 | LLM_API_KEY | Codyssey 키 |
-| AUTO_REFRESH | 24시간 지난 자료 자동 갱신, 0으로 중지 |
+| AUTO_REFRESH | 서버가 하루 한 번 일괄 수집·분석 실행, 0으로 중지(외부 cron 사용 시) |
+| BATCH_HOUR | 일괄 작업 시작 시각(한국시간), 기본 4 |
+| BATCH_LLM_LIMIT | 자동 일괄 작업 1회 정책 분석·중복 판정 사용 여부와 분석 상한(LLM 토큰 사용), 기본 100, 0이면 LLM 작업 안 함 |
+| BATCH_DEDUP_LIMIT | 일괄 작업 1회 새 중복 판정 상한, 기본 30 |
 | NATIONAL_DETAIL_DAILY_BUDGET | 중앙 상세 호출 일일 예산, 기본 20 |
 | LOCAL_DETAIL_DAILY_BUDGET | 지자체 상세 호출 일일 예산, 기본 90 |
 | APP_ENV_FILE | 별도 설정 파일 |
@@ -86,9 +89,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/iumon.ps1 start
 ### 관리 명령
 
 ~~~powershell
-# 데이터 갱신
+# 공공 데이터 수집·게시 (LLM 미사용)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/iumon.ps1 refresh
-# 정책 48개 사전 분석 (LLM 토큰 사용)
+# 분석되지 않은 정책 48개 사전 분석 (LLM 토큰 사용)
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/iumon.ps1 analyze -Limit 48
 # 가상 자료 테스트·저장소 검사
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/iumon.ps1 test
@@ -106,8 +109,12 @@ source .venv/bin/activate
 pip install -r app/requirements.txt
 cp app/.env.example app/.env
 # 설정 후
-python app/collect.py
+python app/batch.py --stages collect,details,publish
 python app/server.py
+# 전체 일괄 작업(수집·상세·중복 판정·게시·사전 분석)
+python app/batch.py --llm-limit 100
+# 호출 없이 분석 대기 수·중복 후보 수만 확인
+python app/batch.py --dry-run
 ~~~
 
 ## Docker 배포 (공개 시연)
@@ -181,7 +188,9 @@ Quick Tunnel 주소는 고정 운영 주소가 아니며 가용성을 보장하�
 
 거주 읍·면은 정책명·대상·선정기준 원문에 적힌 읍·면 이름으로 판단합니다. 내 읍·면이 적힌 사업은 앞에 보여주고 "○○면 대상"으로 표시합니다. 다른 읍·면만 적힌 사업은 탈락시키지 않고 "다른 읍·면 확인" 조건을 붙여 뒤로 보냅니다. "○○읍 제외"처럼 제외 대상으로 적힌 경우에는 판단하지 않습니다. 신청 방법 원문이 읍·면 행정복지센터를 안내하면 상담 준비 메모에 "○○면 행정복지센터"를 적습니다. 읍·면 사무소 전화번호·주소는 검증하지 못해 넣지 않았습니다. 리 단위 사업은 공공 데이터에 없어 묻지 않습니다. **선정확률·신청 편의성 가중치는 없습니다.** 방문·디지털 이용 가능 여부는 신청 준비 단계의 경로 안내에 사용하며 자격·순위를 바꾸지 않습니다.
 
-우선 원문 18개를 분석하고 더 보기로 36/48개까지 확대합니다. 검색 누락·의미 해석 오류가 가능하며 인용 검증만으로 의미의 정확성까지 보장하지는 않습니다. 수집 일부 실패 시 기존 자료와 실패 표시를 유지합니다. 상세 캐시의 목록 수정일·수집 시각을 확인하며 호출 예산은 이 앱의 사용량만 관리합니다.
+공공 API 수집·상세 조회·중복 판정·정책 분석은 app/batch.py가 하루 한 번 일괄로 수행합니다. 추천 요청은 게시된 카탈로그와 저장된 분석만 읽으며 공공 API를 호출하지 않고, LLM은 동의한 경우의 맞춤 설명에만 사용합니다. 게시는 한 트랜잭션으로 교체해 수집 도중이나 실패 시에도 이전 자료를 그대로 보여줍니다. 아직 분석되지 않은 정책은 "AI 분석 대기"로 표시하고, 그렇게 표시된 정책 ID를 세어 다음 일괄 작업에서 먼저 분석합니다(개인 정보는 저장하지 않음). 기존 snapshot.json·details.json·analysis.sqlite3는 처음 실행 시 자동으로 가져오며 원본 파일은 지우지 않습니다.
+
+원문 18개를 검토하고 더 보기로 36/48개까지 확대합니다. 검색 누락·의미 해석 오류가 가능하며 인용 검증만으로 의미의 정확성까지 보장하지는 않습니다. 수집 일부 실패 시 기존 자료와 실패 표시를 유지합니다. 상세 캐시의 목록 수정일·수집 시각을 확인하며 호출 예산은 이 앱의 사용량만 관리합니다.
 
 ## 코드 구조
 
@@ -189,12 +198,13 @@ Quick Tunnel 주소는 고정 운영 주소가 아니며 가용성을 보장하�
 app/
   server.py           API·문답·추천 작업
   journey.py          생활 이야기·질문 순서·신청 준비
-  collect.py          공공 API 수집
+  batch.py            하루 1회 일괄 수집·상세·중복 판정·게시·사전 분석
+  db.py               SQLite 저장소(공공 원본·게시 카탈로그·분석 캐시)
+  collect.py          공공 API 호출
   analysis.py         조건 추출·원문 검증·분석 캐시
   engine.py           검색·중복 검토·조건 판정·추천 순서
   llm.py              OpenAI 호환 LLM 연결
   config.py           환경 변수·데이터 경로
-  warm_analysis.py    공개 정책 사전 분석
   static/             화면·PWA
   test_app.py         앱 회귀 테스트
 scripts/
@@ -220,7 +230,7 @@ chore: 저장소 초기 설정 정리
 
 종류는 feat, fix, docs, refactor, test, ci, build, perf, style, chore, revert를 사용합니다. 호환성이 깨지는 변경은 feat(api)!: ...와 본문의 BREAKING CHANGE:로 설명합니다. PR에는 문제·변경 후 동작·검증 결과를 적습니다.
 
-CI는 앱 회귀 테스트 68개, 저장소 검사 테스트 5개, 음성 기능 테스트 16개와 JavaScript 문법을 검사합니다. 음성 테스트는 인식·합성 API를 모의하여 동의·중단·오류·화면 이동을 확인합니다. 실제 기기의 마이크 인식률·음질이나 API·LLM 정확성, 고령자 현장 사용성을 보장하는 검사는 아닙니다.
+CI는 앱 회귀 테스트 79개, 저장소 검사 테스트 5개, 음성 기능 테스트 16개와 JavaScript 문법을 검사합니다. 음성 테스트는 인식·합성 API를 모의하여 동의·중단·오류·화면 이동을 확인합니다. 실제 기기의 마이크 인식률·음질이나 API·LLM 정확성, 고령자 현장 사용성을 보장하는 검사는 아닙니다.
 
 ## 보안·개인정보
 

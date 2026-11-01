@@ -3,11 +3,10 @@ import hashlib
 import json
 import os
 import re
-import sqlite3
 from datetime import datetime, timezone
 from typing import Literal, Any
 from pydantic import BaseModel, ConfigDict, Field
-from config import DATA_DIR
+import db
 from llm import chat_json
 
 VERSION = 'ieumon-grounded-v3'
@@ -219,25 +218,20 @@ field 허용값: age,region,town,household,income,housing,pension,disability,far
 sex female/male, livelihood yes/no, care_grade none/1/2/3/4/5/cognitive. age/residence_years는 숫자. region은 원문의 실제 대상지역명.
 정확한 조건을 뽑을 수 없으면 eligibility에 op unknown을 사용하라. 답은 JSON 객체만.'''
 
-def connection():
-    db=sqlite3.connect(DATA_DIR/'analysis.sqlite3',timeout=30)
-    db.execute('CREATE TABLE IF NOT EXISTS cache (key TEXT PRIMARY KEY, kind TEXT, payload TEXT, created TEXT)')
-    return db
-
 def fingerprint(policy):
     value=json.dumps({'version':VERSION,'model':os.getenv('LLM_MODEL','gpt-5.4-mini'),
                       'prompt':hashlib.sha256(PROMPT.encode()).hexdigest(),'docs':documents(policy)},ensure_ascii=False,sort_keys=True)
     return hashlib.sha256(value.encode()).hexdigest()
 
 def cache_get(key):
-    with connection() as db:
-        row=db.execute('SELECT payload FROM cache WHERE key=?',(key,)).fetchone()
+    with db.connect() as conn:
+        row=conn.execute('SELECT payload FROM cache WHERE key=?',(key,)).fetchone()
     return json.loads(row[0]) if row else None
 
 def cache_set(key, kind, value):
-    with connection() as db:
-        db.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?,?)',
-                   (key,kind,json.dumps(value,ensure_ascii=False),datetime.now(timezone.utc).isoformat()))
+    with db.connect() as conn:
+        conn.execute('INSERT OR REPLACE INTO cache VALUES (?,?,?,?)',
+                     (key,kind,json.dumps(value,ensure_ascii=False),datetime.now(timezone.utc).isoformat()))
 
 def analyze(policy, allow_network=True):
     key=fingerprint(policy)
