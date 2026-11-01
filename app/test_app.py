@@ -7,7 +7,7 @@ from unittest.mock import patch
 from analysis import validate_analysis,validate_tree,valid_evidence,money_in_quote,documents,fingerprint,cache_set
 import batch
 import db
-from engine import retrieve,create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
+from engine import retrieve,relevance,create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
 from server import Profile,RecommendRequest,QUESTION_BANK,BASIC_QUESTIONS,status
 from journey import understand_story,prepare,intake_plan
 
@@ -93,8 +93,18 @@ class GroundedTests(unittest.TestCase):
     def test_unknown_not_mismatch(self):
         self.assertEqual(eval_tree(atom(field='disability',cmp='eq',value='yes'),PROFILE)['state'],'unknown')
     def test_llm_audience_hint_cannot_exclude(self):
-        r=assess(policy(),PROFILE,analysis(senior_possible=False,eligibility={'op':'unknown','label':'수급 여부 확인'}))
+        # Without a verified source quote (validate_analysis drops unverified ones) the label changes nothing.
+        r=assess(policy(),PROFILE,analysis(senior_possible=False,audience_evidence=None,eligibility={'op':'unknown','label':'수급 여부 확인'}))
         self.assertNotEqual(r['group'],'excluded')
+    def test_quoted_other_audience_leaves_main_list_with_quote(self):
+        p=policy(title='영양 지원',target='관내 임산부 및 출산 후 6개월 이내 산모')
+        a=analysis(senior_possible=False,audience_evidence=evidence(quote='관내 임산부'),eligibility={'op':'unknown','label':'임신 여부'})
+        r=assess(p,PROFILE,a)
+        self.assertEqual((r['group'],r['audience_state'],r['eligibility_state']),('excluded','other','unknown'))
+        self.assertIn('관내 임산부',r['reasons'][0])
+        school=assess(policy(title='고등학교생 무상급식 지원',target='관내 고등학교 재학생'),PROFILE,a)
+        self.assertEqual((school['group'],school['audience_state']),('excluded','other'))  # PR #17's school rule
+        self.assertEqual([p['id'] for p in finalize([r,assess(policy(id='b',title='가 건강 지원'),PROFILE,analysis(complete=False))],PROFILE)],['b','gov-x'])
     def test_loan_not_compared_as_cash_grant(self):
         self.assertEqual(validate_analysis(analysis(),policy(title='노후긴급자금 대부사업'))['benefit']['kind'],'loan')
     def test_other_region_mismatch(self):
@@ -322,6 +332,17 @@ class BatchPipelineTests(unittest.TestCase):
             self.run_job()  # second request reads the cached analysis
             self.assertEqual(model.call_count,1)
         self.assertEqual(db.demand(),{})
+    def test_other_audience_gives_its_review_slot_to_next_candidate(self):
+        student=[policy(id=f'gov-s{i}',title=f'건강 지원 {i}',target='만 6세 미만 영유아',sources=[{'source':'gov','label':'정부24','id':f's{i}'}]) for i in range(6)]
+        senior=policy(id='gov-z',title='건강 일자리',topics=['일자리'],sources=[{'source':'gov','label':'정부24','id':'z'}])
+        self.publish(student+[senior])
+        for p in student:cache_set(fingerprint(p),'policy',analysis(senior_possible=False,audience_evidence=evidence(quote='만 6세 미만 영유아')))
+        cache_set(fingerprint(senior),'policy',analysis())
+        with patch('analysis.chat_json',side_effect=AssertionError('no live analysis expected')):
+            job=self.run_job()
+        ids=[p['id'] for p in job['result']['policies']]
+        self.assertIn('gov-z',ids);self.assertEqual(len(ids),6)
+        self.assertEqual(ids[0],'gov-z')
     def test_failed_live_analysis_stays_pending_and_is_queued(self):
         docs=[{'text':'신청서 1부','source':[{'source':'gov','label':'정부24','id':'x'}],'field':'정부24 상세.구비서류'}]
         self.publish([policy(official_documents=docs)])
@@ -439,6 +460,68 @@ class SearchTermTests(unittest.TestCase):
         issues=[{'label':'집이 낡았어요','topic':'주거','terms':['주택개보수']},{'label':'끼니','topic':'돌봄','terms':['도시락','<x>']}]
         self.assertEqual(intake_plan(issues,'1',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['도시락'])
         self.assertEqual(intake_plan(issues,'all',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['주택개보수','도시락'])
+    def test_source_wording_for_children_only_leaves_main_list(self):
+        kids=policy(title='방과후아카데미 돌봄',target='초등학교 4~6학년, 중학교 1~3학년')
+        r=assess(kids,PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))
+        self.assertEqual((r['group'],r['audience_state']),('excluded','other'))
+        self.assertIn('초등학교',r['reasons'][0])
+        grand=policy(title='조손가정 아동 양육 지원',target='조부모가 손자녀를 양육하는 가정')
+        self.assertEqual(assess(grand,PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))['audience_state'],'fits')
+        self.assertEqual(assess(policy(),PROFILE,analysis())['audience_state'],'fits')
+        for title,target in (('치료회복 프로그램','가정폭력 피해 여성과 그 동반 아동'),('퇴임대비 연수','사립학교 퇴직예정 교직원'),
+                             ('해양문화행사','초, 중, 고등학생 및 대학생, 일반인'),('아동안전지킴이',''),
+                             ('방송통신중학교','초등학교 졸업자 및 이와 동등 이상의 학력을 인정받은 자')):
+            r=assess(policy(title=title,target=target),PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))
+            self.assertEqual(r['audience_state'],'fits',title)
+        mixed=policy(title='보조기기 지원',target='등록 장애인 및 장애아동')
+        self.assertEqual(assess(mixed,PROFILE,analysis(senior_possible=None,audience_evidence=None,complete=False))['audience_state'],'fits')
+    def test_ai_audience_label_alone_does_not_exclude(self):
+        for quote in ('만20세 이상인 자로서 정기소득이 없는 자','15세~69세 구직자 중 중위소득 60% 이하','기준중위소득 125% 이하 등록장애인'):
+            a=analysis(senior_possible=False,audience_evidence=evidence(quote=quote),complete=False)
+            self.assertEqual(assess(policy(target=quote),{**PROFILE,'age':65},a)['audience_state'],'fits',quote)
+    def test_stated_upper_age_below_resident_excludes(self):
+        for quote in ('18세 이상 ~ 만65세 미만의 등록 장애인','만 19세 미만 아동','6세 이상 18세 미만'):
+            a=analysis(senior_possible=None,audience_evidence=None,complete=False)
+            r=assess(policy(title='활동 지원',target=quote),{**PROFILE,'age':65},a)
+            self.assertEqual(r['audience_state'],'other',quote)
+        a=analysis(senior_possible=None,audience_evidence=None,complete=False)
+        self.assertEqual(assess(policy(title='상해보험',target='만15~65세 기초생활수급자'),{**PROFILE,'age':65},a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='상해보험',target='만15~65세 기초생활수급자'),{**PROFILE,'age':70},a)['audience_state'],'other')
+        self.assertEqual(assess(policy(title='양육비',target='만 18세 미만 자녀를 둔 가구'),PROFILE,a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='관람료 면제',target='7세 이하 및 65세 이상인 자'),PROFILE,a)['audience_state'],'fits')
+        for title,target in (('본인부담 경감','○ 희귀질환자 ○ 만성질환자 ○ 18세 미만인 자'),('내일배움카드','○ 국민 누구나 ○ 지원 제외 ④ 근로자(만 45세 미만)'),
+                             ('체험관','누구나(단, 5세 이하는 제한)'),('장애인 의료비','○ 의료급여 2종 등록장애인 ○ 차상위 등록장애인(만성질환자 및 18세 미만 등록장애인)')):
+            self.assertEqual(assess(policy(title=title,target=target),{**PROFILE,'age':65},a)['audience_state'],'fits',title)
+        self.assertEqual(assess(policy(title='본인부담 면제',target='의료급여 수급권자 중 면제 대상자\n - 1종 수급권자 중 당연 적용\n - 18세 미만인 자'),
+                                {**PROFILE,'age':65},a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='장애인 창업보육실 운영',target=''),PROFILE,a)['audience_state'],'fits')
+        self.assertEqual(assess(policy(title='활동지원',target='○ 만6세∼만65세 미만 등록 장애인 중 활동지원등급 판정을 받은 자'),
+                                {**PROFILE,'age':65},a)['audience_state'],'other')
+        lunch=policy(title='학교급식비 지원',target='저소득층 수급 자격자(기초, 차상위)인 학생')
+        self.assertEqual(assess(lunch,PROFILE,a)['audience_state'],'other')
+    def test_short_word_must_start_a_title_word(self):
+        user={**PROFILE,'focus_summary':['귀가 안 들려 대화가 어려워요'],'search_terms':[]}
+        self.assertNotEqual(relevance(policy(title='과수고품질시설현대화',summary='',target='',benefit='',topics=['기타']),user),0)
+        self.assertEqual(relevance(policy(title='어르신 대화 상대 서비스',summary='',target='',benefit=''),user),0)
+    def test_spaced_search_term_stays_whole(self):
+        user={**PROFILE,'priority':'돌봄','needs':['돌봄'],'focus_summary':['끼니 챙기기 힘들어요'],'search_terms':['결식 예방','도시락 지원']}
+        self.assertEqual(relevance(policy(title='구제역 예방접종 지원',summary='',target='',benefit='',topics=['기타']),user),4)
+        self.assertEqual(relevance(policy(title='어르신 도시락 배달',summary='',target='',benefit=''),user),0)
+    def test_pairs_do_not_span_words(self):
+        user={**PROFILE,'focus_summary':['자꾸 잊어버려요'],'search_terms':['인지지원']}
+        self.assertNotEqual(relevance(policy(title='체육인 복지 지원',summary='',target='',benefit='',topics=['기타']),user),0)
+        self.assertEqual(relevance(policy(title='치매 인지지원 서비스',summary='',target='',benefit=''),user),0)
+    def test_shared_fragment_is_not_a_direct_match(self):
+        user={**PROFILE,'priority':'주거','needs':['주거'],'focus_summary':['겨울 난방비가 걱정돼요'],'search_terms':['에너지바우처']}
+        voucher=policy(id='v',title='에너지바우처',summary='',target='',benefit='')
+        tour=policy(id='t',title='녹색에너지 체험관 견학',summary='',target='',benefit='',topics=['기타'])
+        self.assertEqual((relevance(voucher,user),relevance(tour,user)),(0,4))
+    def test_stronger_word_match_ranks_first_within_tier(self):
+        user={**PROFILE,'priority':'주거','needs':['주거'],'focus_summary':['집이 낡아서 비가 새요'],'search_terms':['주택개보수','집수리']}
+        weak=assess(policy(id='a-weak',title='주택 개보수 상담',topics=['주거']),user,analysis())
+        strong=assess(policy(id='z-strong',title='노후주택개보수 집수리 지원',topics=['주거']),user,
+                      analysis(application={'state':'unknown'}))
+        self.assertEqual([p['id'] for p in finalize([weak,strong],user)],['z-strong','a-weak'])
     def test_search_terms_reach_policies_the_story_words_miss(self):
         user={**PROFILE,'priority':'생활비','needs':['생활비'],'focus_summary':['집이 낡아서 비가 새요']}
         house=policy(id='house',title='노후주택 개보수 지원',topics=['주거'],summary='',benefit='')

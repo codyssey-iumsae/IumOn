@@ -173,26 +173,60 @@ STOP_BIGRAMS=frozenset('지원 사업 서비 비스 대상 어르 르신 노인 
                        '아파 해요 어요 아요 워요 돼요 세요 가요 데요 는데 하고 해서 있어 없어 싶어 같아 요해 담돼'.split())
 
 @lru_cache(maxsize=64)
-def query_bigrams(query):
+def query_words(query,terms=()):
+    """Each story word and each search term as its own set of character pairs (common pairs removed).
+    Matching per word keeps one shared fragment, such as 에너지 inside 에너지바우처, from counting as a hit.
+    A search term stays whole even when the LLM writes it with a space (결식 예방 -> 결식예방), so 예방
+    alone never matches 구제역 예방접종."""
+    out=[]
     # A trailing particle is dropped so that 병원에 counts as one word (병원), not two pairs.
-    words=[re.sub(r'(?<=..)[이가을를은는에의도와과로]$','',w) for w in re.findall(r'[가-힣a-z0-9]+',query.lower())]
-    return frozenset(w[i:i+2] for w in words for i in range(len(w)-1))-STOP_BIGRAMS
+    words=re.findall(r'[가-힣a-z0-9]+',query.lower())+[''.join(re.findall(r'[가-힣a-z0-9]+',t.lower())) for t in terms]
+    for w in filter(None,words):
+        w=re.sub(r'(?<=..)[이가을를은는에의도와과로]$','',w)
+        grams=frozenset(w[i:i+2] for i in range(len(w)-1))-STOP_BIGRAMS
+        if grams and grams not in [g for _,g in out]:out.append((w,grams))
+    return tuple(out)
 
-def relevance(p,profile):
-    """Need tier, lower first: 0 direct, 1 related, 2 priority topic, 3 other selected need, 4 unrelated."""
-    # Lexical tier over the story plus LLM search terms. Optional remote GPU embeddings expand the
+@lru_cache(maxsize=8192)
+def text_grams(value):
+    """Character pairs inside each word of a text, so pairs never span a space (체육인 지원 has no 인지)."""
+    return frozenset(w[i:i+2] for w in re.findall(r'[가-힣a-z0-9]+',str(value or '').lower()) for i in range(len(w)-1))
+
+def match(p,profile):
+    """(need tier, strength). Tier, lower first: 0 direct, 1 related, 2 priority topic, 3 other selected need,
+    4 unrelated. Strength counts matched words (title words twice), to order policies inside one tier."""
+    # Lexical match over the story plus LLM search terms. Optional remote GPU embeddings expand the
     # candidate pool in retrieve(); these evidence/eligibility ranking rules remain unchanged.
     # search_terms are policy words the LLM derived from the consented story (e.g. 비가 새요 -> 주택개보수).
-    query=' '.join([*(profile.get('focus_summary') or profile.get('story_summary') or []),*profile.get('search_terms',[])])
+    story=' '.join(profile.get('focus_summary') or profile.get('story_summary') or [])
+    terms=tuple(profile.get('search_terms',[]))
+    query=' '.join([story,*terms])
     body=' '.join(p.get(f) or '' for f in ('summary','target','benefit'))
     words=[w for triggers,policy_words in SYNONYMS if any(t in query for t in triggers) for w in policy_words]
-    grams=query_bigrams(query);title,plain=norm(p['title']),norm(body)
-    in_title=sum(g in title for g in grams)
-    if any(w in p['title'] for w in words) or in_title>=2:return 0
-    if any(w in body for w in words) or in_title==1 or sum(g in plain for g in grams)>=2:return 1
+    found=query_words(story,terms);units=[g for _,g in found];title,plain=text_grams(p['title']),text_grams(body)
+    title_words=re.findall(r'[가-힣a-z0-9]+',p['title'].lower())
+    # A word is present when all its character pairs appear (one may be missing in words of 4+ pairs).
+    # A single-pair word such as 대화 must start a title word (not 현대화) and never counts in long texts.
+    def present(text,shortest):
+        return sum(sum(g in text for g in u)>=max(len(u)-(len(u)>3),1) for u in units if len(u)>=shortest)
+    short=sum(any(t.startswith(w) for t in title_words) for w,u in found if len(u)==1)
+    in_title=present(title,2)+short+sum(w in p['title'] for w in words)
+    in_body=present(plain,2)+sum(w in body for w in words)
+    partial=sum(any(g in title for g in u) for u in units if len(u)>=2)
+    strength=2*in_title+in_body+partial
+    if in_title:return 0,strength
+    # Fragments of two different words in the title still suggest a link, one level lower.
+    if in_body or partial>=2:return 1,strength
     needs=profile.get('needs',[])
     first=needs if profile.get('priority_mode') in ('all','unknown') else [profile.get('priority')]
-    return 2 if set(first)&set(p['topics']) else 3 if set(needs)&set(p['topics']) else 4
+    return (2 if set(first)&set(p['topics']) else 3 if set(needs)&set(p['topics']) else 4),strength
+
+def relevance(p,profile):
+    return match(p,profile)[0]
+
+def match_rank(p,profile):
+    """Stronger word match first, capped so it stays a small int like the other RANKING keys."""
+    return -min(9,match(p,profile)[1])
 
 # These are source-text audience restrictions, not LLM audience guesses. Generic 'student' is
 # deliberately insufficient: older adults can attend university, lifelong or broadcast schools.
@@ -225,7 +259,10 @@ def audience_exclusion(policy,profile):
 def retrieve(catalog,profile):
     catalog=[p for p in catalog if not audience_exclusion(p,profile)]
     town=profile.get('town')
-    lexical=sorted(catalog,key=lambda p:(relevance(p,profile),not p['senior'],REGION_TIERS[region_fit(p,town)],p['title']))
+    def key(p):
+        tier,strength=match(p,profile)
+        return tier,-strength,not p['senior'],REGION_TIERS[region_fit(p,town)],p['title']
+    lexical=sorted(catalog,key=key)
     from embeddings import rerank
     return rerank(catalog,profile,lexical)
 
@@ -301,11 +338,71 @@ def application_period(p,a,today=None):
     if app.get('state')=='always':return {'state':'always','label':'원문상 상시 접수 · 예산 확인 필요'}
     return {'state':'unknown','label':'접수기간 확인 필요'}
 
+# Source wording that names only another group; matched against the title and the 지원대상 text.
+OTHER_GROUP=re.compile(r'초등학|중학|고등학|학교|학생|청소년|청년|아동|영유아|유아|어린이|신생아|(?<!창업)보육|방과후|임산부|임신|출산|난임|산모')
+# Any wording that can include an older adult keeps the program in the main list.
+SENIOR_WORDS=re.compile(r'노인|어르신|경로|고령|65세|60세|조손|조부모|손자녀|성인|장애인|저소득|기초생활|차상위|수급|'
+                        r'가구|세대|국민|주민|누구|농업인|어업인|유공|보훈|일반인|교직원|직원|재직자|근로자|종사자|피해자|보호자|지킴이|일자리|졸업')
+
+# "18세 이상 ~ 40세 미만", "6세~18세", "만 19세 미만": the most permissive stated upper age wins.
+AGE_RANGE=re.compile(r'(\d{1,3})\s*세?\s*(?:이상)?\s*[~∼\-]\s*만?\s*(\d{1,3})\s*세\s*(미만|이하)?')
+AGE_UPPER=re.compile(r'(\d{1,3})\s*세\s*(미만|이하)(?!\s*(?:의|인)?\s*(?:자녀|아동을|손자녀|를 둔|을 둔))'
+                     r'(?!\s*(?:는|은|자는)?\s*(?:제한|제외|불가))')
+
+ADULT_WORDS=re.compile(r'노인|어르신|경로|고령|65세|60세|조손|조부모|손자녀|성인|일반인|누구|교직원|근로자|재직자|피해자|지킴이|일자리|졸업')
+# "65세 이상" with no upper end; "6세 이상 18세 미만" is a range, not open-ended.
+AGE_OPEN=re.compile(r'(\d{1,3})\s*세\s*이상(?!\s*[~∼\-])(?!\s*(?:만\s*)?\d{1,3}\s*세\s*(?:미만|이하))')
+
+def age_ceiling(text):
+    """Oldest age the text admits, or None when it states no upper age (also when any range is open-ended,
+    as in "7세 이하 및 65세 이상")."""
+    if AGE_OPEN.search(text):return None
+    uppers=[int(m.group(2))-(m.group(3)=='미만') for m in AGE_RANGE.finditer(text)]
+    uppers+=[int(m.group(1))-(m.group(2)=='미만') for m in AGE_UPPER.finditer(text)]
+    return max(uppers) if uppers else None
+
+def group_only(text):
+    """True when the text leads with another group (초등학교 4~6학년, 임산부…) and names no adult or senior."""
+    lead=len(re.match(r'[\s○●◦▶·\-*※0-9.)]*',text).group())
+    found=OTHER_GROUP.search(text)
+    return bool(found and found.start()-lead<=12 and not SENIOR_WORDS.search(text))
+
+def age_excluded(text,age):
+    """Clause that keeps this age out, or None. Every ○ group must state an upper age below it: one group
+    without a limit (만성질환자 next to 18세 미만) keeps the program. 누구나 never excludes by age."""
+    if re.search(r'누구|모든\s?국민|전\s?국민',text):return None
+    # Audience groups are ○ items or bulleted lines (-, ·, 1.); a short heading such as 지원 대상 is not one.
+    heading=re.compile(r'^[(\[]?\s*(?:지원\s*)?(?:대상|자격|연령|요건|기준|조건)\s*[)\]]?\s*:?\s*$')
+    groups=[g.strip() for g in re.split(r'○|ㅇ|●|(?:^|\n)\s*(?:-|·|∙|\d+\.)\s',text)
+            if g.strip() and not heading.match(g.strip())] or [text]
+    ceilings=[age_ceiling(g) for g in groups]
+    if all(c is not None and c<age for c in ceilings):return groups[0]
+    return None
+
+def other_audience(analysis,policy=None,age=65):
+    """Source text showing a resident of this age cannot be the audience, or None. Only the source wording
+    decides: an upper age below the resident's age in every audience group, or an audience that is only
+    another group (초등학교 4~6학년, 임산부). The analysis' own senior label is not trusted alone; its
+    audience quote is read like the source when the 지원대상 text is missing."""
+    quote=((analysis or {}).get('audience_evidence') or {}).get('quote') or ''
+    versions=policy.get('versions',[policy]) if policy else []
+    target=' ○ '.join(str(v.get('target') or '') for v in versions if v.get('target'))
+    clause=age_excluded(target or quote,age) if (target or quote) else None
+    if clause:return clause[:120].strip()
+    for text in [quote,*[str(v.get('target') or '')[:150] for v in versions]]:
+        if text and group_only(text):return text[:120].strip()
+    # A title naming another group (학교급식비) decides unless the title or 지원대상 clearly names an adult;
+    # broad words such as 저소득 often describe the student's household, so they do not count here.
+    title=' '.join(str(v.get('title') or '') for v in versions)
+    if title and OTHER_GROUP.search(title) and not ADULT_WORDS.search(title+' '+target[:300]):
+        return title[:120].strip()
+    return None
+
 def assess(p,profile,analysis=None):
     p=copy.deepcopy(p)
     excluded=audience_exclusion(p,profile)
     if excluded:
-        return {**p,'group':'excluded','status':'학생 대상 지원 · 본인 추천 범위 밖','analysis_state':'audience_excluded',
+        return {**p,'group':'excluded','status':'학생 대상 지원 · 본인 추천 범위 밖','analysis_state':'audience_excluded','audience_state':'other',
                 'eligibility_state':'unknown','major_conditions_state':'unknown','region_fit':region_fit(p,profile.get('town')),
                 'tree':{'state':'unknown','label':excluded},'checks':[],'reasons':[excluded],
                 'access':application_access([],profile),'period_status':{'state':'unknown','label':'접수기간 확인 필요'},
@@ -337,7 +434,6 @@ def assess(p,profile,analysis=None):
     if p.get('conflicts'):
         tree={'state':'unknown','op':'all','label':'출처 간 조건 확인 필요',
               'children':[tree,*[{'state':'unknown','label':x} for x in p['conflicts']]]}
-    # An LLM audience label is a retrieval hint, never sufficient proof of ineligibility.
     access=application_access(a['routes'],profile)
     period=application_period(p,a)
     eligibility='mismatch' if tree['state']=='mismatch' else 'match' if tree['state']=='match' else 'unknown'
@@ -345,6 +441,10 @@ def assess(p,profile,analysis=None):
     if group=='matched' and access['state']=='assistance':group='assistance'
     # A barrier never changes eligibility or priority; it is a separate label/group.
     if period['state']=='closed':group='excluded'
+    # The analysis quoted the source to say the program is for someone else (e.g. 고등학생, 영유아). That is
+    # moved out of the main list with the quote shown, never hidden; eligibility itself stays as evaluated.
+    audience=other_audience(a,p,profile.get('age') or 65)
+    if audience:group='excluded'
     if profile.get('pension')=='yes' and re.fullmatch(r'기초연금(?:지급|지원|지원사업)?',norm(p['title'])):
         group='receiving'
     b=a['benefit']
@@ -355,11 +455,12 @@ def assess(p,profile,analysis=None):
     if tier==0:reasons.append('말씀하신 어려움과 직접 관련된 사업이에요.')
     elif tier==1:reasons.append('말씀하신 어려움과 관련 있는 사업이에요.')
     elif related:reasons.append('필요한 도움('+'·'.join(related)+')과 관련 있어요.')
+    if audience:reasons.insert(0,f'원문상 지원 대상이 어르신이 아닐 수 있어요: "{audience[:80]}"')
     if fit=='here':reasons.append(f'{town} 주민을 위한 사업이에요.')
     elif fit=='elsewhere':reasons.append(f'원문에 {named}이 적혀 있어 {town} 주민도 대상인지 확인해야 해요.')
     reasons.append('확인한 조건은 맞지만 미확인 조건을 더 살펴봐야 해요.' if eligibility=='unknown'
                    else '입력한 정보와 추출한 주요 조건이 맞아요.' if eligibility=='match' else '맞지 않는 조건 또는 접수 마감을 확인했어요.')
-    return {**p,'topics':topics,'group':group,'status':GROUPS[group],
+    return {**p,'topics':topics,'group':group,'status':GROUPS[group],'audience_state':'other' if audience else 'fits',
         'eligibility_state':eligibility,'major_conditions_state':major_state,'analysis_state':'grounded','tree':tree,'checks':leaves(tree),
         'benefit_info':b,'access':access,'period_status':period,'reasons':reasons,
         'analysis_notes':a['notes'],'score':None,'analysis_model':'gpt-5.4-mini'}
@@ -489,6 +590,7 @@ def next_questions(matches,profile,question_bank):
 RANKING=[  # earlier criterion wins; each returns a small int, lower first. Access (mobility/digital) is never one.
     ('group',       lambda p,u:{'receiving':1,'excluded':2}.get(p['group'],0)),
     ('need',        relevance),
+    ('match',       match_rank),
     ('eligibility', lambda p,u:{'match':0,'unknown':1,'mismatch':2}.get(p.get('eligibility_state'),1)),
     ('region',      lambda p,u:REGION_TIERS[p.get('region_fit') or region_fit(p,u.get('town'))]),
     ('period',      lambda p,u:{'open':0,'always':0,'upcoming':1}.get(p.get('period_status',{}).get('state'),2)),
