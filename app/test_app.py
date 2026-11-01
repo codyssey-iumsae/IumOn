@@ -7,7 +7,7 @@ from unittest.mock import patch
 from analysis import validate_analysis,validate_tree,valid_evidence,money_in_quote,documents,fingerprint,cache_set
 import batch
 import db
-from engine import create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
+from engine import retrieve,create,merge,assess,eval_tree,application_access,application_period,next_questions,finalize,semantic_merge,load_catalog,personalize
 from server import Profile,RecommendRequest,QUESTION_BANK,BASIC_QUESTIONS,status
 from journey import understand_story,prepare,intake_plan
 
@@ -418,5 +418,19 @@ class SearchTermTests(unittest.TestCase):
         issues=[{'label':'집이 낡았어요','topic':'주거','terms':['주택개보수']},{'label':'끼니','topic':'돌봄','terms':['도시락','<x>']}]
         self.assertEqual(intake_plan(issues,'1',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['도시락'])
         self.assertEqual(intake_plan(issues,'all',QUESTION_BANK,BASIC_QUESTIONS)['search_terms'],['주택개보수','도시락'])
+    def test_search_terms_reach_policies_the_story_words_miss(self):
+        user={**PROFILE,'priority':'생활비','needs':['생활비'],'focus_summary':['집이 낡아서 비가 새요']}
+        house=policy(id='house',title='노후주택 개보수 지원',topics=['주거'],summary='',benefit='')
+        other=policy(id='other',title='가 노인 일자리',topics=['일자리'],summary='',benefit='')
+        self.assertEqual([p['id'] for p in retrieve([other,house],user)],['other','house'])
+        self.assertEqual([p['id'] for p in retrieve([other,house],{**user,'search_terms':['주택개보수','집수리']})],['house','other'])
+    def test_profile_limits_search_terms(self):
+        with self.assertRaises(ValueError):Profile(age=72,search_terms=['가'*21])
+        with self.assertRaises(ValueError):Profile(age=72,search_terms=['가']*21)
+    def test_search_terms_not_sent_with_personal_profile(self):
+        p=assess(policy(),PROFILE,analysis())
+        with patch('engine.chat_json',return_value={'items':[]}) as model:
+            personalize([p],{**PROFILE,'search_terms':['주택개보수']})
+        self.assertNotIn('search_terms',model.call_args.args[1]['user'])
 
 if __name__=='__main__':unittest.main(verbosity=2)

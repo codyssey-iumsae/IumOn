@@ -47,7 +47,7 @@ function chooseMainDifficulty(issues){
  $('#focus-next').onclick=async()=>{
   if(selected===null){$('#focus-error').textContent='먼저 살펴볼 도움을 선택해 주세요.';return;}
   const b=$('#focus-next');b.disabled=true;
-  try{const plan=await api('/api/intake-plan',{issues,selected});draft=profile?structuredClone(profile):{region:'청양군',answered:[]};Object.assign(draft,{story_summary:plan.story_summary,focus_summary:plan.focus_summary,needs:plan.needs,priority:plan.priority,priority_mode:plan.priority_mode});delete draft.knee_care;delete draft.transport_mode;draft.answered=(draft.answered||[]).filter(f=>!['knee_care','transport_mode'].includes(f));questions=plan.questions;questionMode='intake';editMode=false;step=0;question();}
+  try{const plan=await api('/api/intake-plan',{issues,selected});draft=profile?structuredClone(profile):{region:'청양군',answered:[]};Object.assign(draft,{story_summary:plan.story_summary,focus_summary:plan.focus_summary,search_terms:plan.search_terms||[],needs:plan.needs,priority:plan.priority,priority_mode:plan.priority_mode});delete draft.knee_care;delete draft.transport_mode;draft.answered=(draft.answered||[]).filter(f=>!['knee_care','transport_mode'].includes(f));questions=plan.questions;questionMode='intake';editMode=false;step=0;question();}
   catch(e){if($('#focus-error'))$('#focus-error').textContent=e.message;}finally{if(b.isConnected)b.disabled=false;}
  };
 }

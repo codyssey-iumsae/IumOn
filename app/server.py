@@ -6,7 +6,7 @@ import time
 import asyncio
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
-from typing import Literal
+from typing import Annotated, Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -66,6 +66,7 @@ class Profile(BaseModel):
     answered:list[str]=Field(default_factory=list,max_length=30)
     story_summary:list[str]=Field(default_factory=list,max_length=5)
     focus_summary:list[str]=Field(default_factory=list,max_length=5)
+    search_terms:list[Annotated[str,Field(max_length=20)]]=Field(default_factory=list,max_length=20)
     priority_mode:Literal['one','all','unknown']='one'
     knee_care:Literal['treatment','surgery','no_visit','unknown']='unknown'
     transport_mode:Literal['bus','taxi','family','difficult','unknown']='unknown'

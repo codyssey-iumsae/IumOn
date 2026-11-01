@@ -180,9 +180,10 @@ def query_bigrams(query):
 
 def relevance(p,profile):
     """Need tier, lower first: 0 direct, 1 related, 2 priority topic, 3 other selected need, 4 unrelated."""
-    # ponytail: lexical only (synonym table + shared character pairs), so a paraphrase such as
-    # "귀가 잘 안 들려요" never reaches 보청기. Upgrade path: rank by a local embedding model such as bge-m3.
-    query=' '.join(profile.get('focus_summary') or profile.get('story_summary') or [])
+    # Lexical (synonym table + shared character pairs) over the story plus LLM search terms. Local embedding
+    # models that fit the 1GB server ranked worse than this on real policies, and the LLM API has no embeddings.
+    # search_terms are policy words the LLM derived from the consented story (e.g. 비가 새요 -> 주택개보수).
+    query=' '.join([*(profile.get('focus_summary') or profile.get('story_summary') or []),*profile.get('search_terms',[])])
     body=' '.join(p.get(f) or '' for f in ('summary','target','benefit'))
     words=[w for triggers,policy_words in SYNONYMS if any(t in query for t in triggers) for w in policy_words]
     grams=query_bigrams(query);title,plain=norm(p['title']),norm(body)
@@ -407,7 +408,7 @@ def personalize(matches,profile):
     candidates=[p for p in matches if p['group'] not in ('excluded','receiving') and p['analysis_state']=='grounded'][:8]
     if not candidates:return False
     try:
-        minimal={k:v for k,v in profile.items() if k not in ('answered','mobility','digital') and v not in (None,'unknown','',[])}
+        minimal={k:v for k,v in profile.items() if k not in ('answered','mobility','digital','search_terms') and v not in (None,'unknown','',[])}
         response=chat_json(MATCH_PROMPT,{'user':minimal,'items':[{'id':p['id'],'documents':documents(p),
                          'state':p['eligibility_state'],'tree':p['tree'],'checks':p['checks'],'benefit':p['benefit_info']} for p in candidates]},3200)
         byid={p['id']:p for p in candidates}
