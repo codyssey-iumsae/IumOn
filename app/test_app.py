@@ -398,10 +398,13 @@ class BatchPipelineTests(unittest.TestCase):
         with db.connect() as conn:
             db.replace_source(conn,'national',rows,'servId');db.set_source_status(conn,'national','ok',rows=3)
         with patch('analysis.chat_json',return_value=analysis()):
+            first=batch.run(('publish','analyze'),llm_limit=2,dedup_limit=0)
+            self.assertTrue(first['publication_deferred'])
+            self.assertIsNone(db.active_run())
             batch.run(('publish','analyze'),llm_limit=2,dedup_limit=0)
         catalog,meta=load_catalog()
         self.assertEqual((len(catalog),meta['counts']),(3,{'national':3}))
-        self.assertEqual(len(db.analyzed_keys()),2)
+        self.assertEqual(len(db.analyzed_keys()),3)
         self.assertFalse(batch.LOCK.exists())
     def test_rejected_key_stops_analysis_without_blaming_policies(self):
         from llm import ModelRejected
