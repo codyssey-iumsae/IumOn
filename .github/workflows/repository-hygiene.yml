@@ -48,7 +48,8 @@ jobs:
         run: |
           mkdir -p "$IUMON_DATA_DIR"
           cp tests/fixtures/snapshot.json "$IUMON_DATA_DIR/snapshot.json"
-      - run: python -m unittest discover -s app -p test_app.py -v
+      - run: python -m unittest discover -s app -p 'test_*.py' -v
+      - run: python -m unittest discover -s gpu -p 'test_*.py' -v
       - run: node --check app/static/app.js && node --check app/static/journey.js && node --check app/static/voice.js
       - run: node --test tests/voice.test.cjs
   docker-smoke:
