@@ -5,7 +5,7 @@ import threading
 import time
 import asyncio
 from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Annotated, Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -158,11 +158,23 @@ def run_recommendation(token,request):
         catalog,meta=load_catalog()
         chosen=retrieve(catalog,profile)[:request.limit]
         update_job(token,stage='정책 원문 분석 결과를 불러오고 있어요.',total=len(chosen),done=0)
-        # Analyses and AI duplicate merges come from the daily batch; nothing is fetched here.
+        # The daily batch pre-analyzes policies; read those first so most requests make no LLM call.
         analyses={p['id']:analyze(p,allow_network=False) for p in chosen}
+        missing=[p for p in chosen if not analyses[p['id']]]
+        done=len(chosen)-len(missing)
+        update_job(token,done=done)
+        if missing:
+            # A policy the batch has not reached yet is analyzed now and cached, as before the batch existed.
+            update_job(token,stage='정책 원문에서 조건과 혜택을 분석하고 있어요.')
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                futures={pool.submit(analyze,p):p for p in missing}
+                for future in as_completed(futures):
+                    try:analyses[futures[future]['id']]=future.result()
+                    except Exception:pass # stays '분석 대기'; the batch retries it first
+                    done+=1
+                    update_job(token,done=done)
         pending=[i for i,a in analyses.items() if not a]
         db.record_demand(pending)
-        update_job(token,done=len(chosen))
         if not job_live(token):return
         relations=db.relations_for(meta['run_id'],analyses) if meta.get('run_id') else []
         matches=[assess(p,profile,analyses[p['id']]) for p in chosen]

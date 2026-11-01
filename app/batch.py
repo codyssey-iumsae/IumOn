@@ -235,13 +235,24 @@ def due(now=None):
         return now - started >= timedelta(hours=1)  # nothing published yet: retry hourly
     return started.date() < now.date() and now.hour >= env_int('BATCH_HOUR', 4)
 
-def run_scheduled():
-    # Two analysis workers leave LLM slots free for users. BATCH_LLM_LIMIT=0 turns scheduled LLM work off
-    # (unlike the CLI, where --llm-limit 0 means every pending policy).
-    limit = env_int('BATCH_LLM_LIMIT', 100)
-    stages = STAGES if limit > 0 else ('collect', 'details', 'publish')
+def scheduled_llm_limit():
+    """BATCH_LLM_LIMIT for the scheduled run: 'all' analyzes every pending policy (returned as 0, the
+    analyze() value for all), a positive number caps it, and 0 or a negative number turns LLM work off (None)."""
+    raw = os.getenv('BATCH_LLM_LIMIT', '100').strip().lower()
+    if raw == 'all':
+        return 0
     try:
-        run(stages, llm_limit=limit, dedup_limit=env_int('BATCH_DEDUP_LIMIT', 30), workers=2)
+        limit = int(raw)
+    except ValueError:
+        return 100
+    return limit if limit > 0 else None
+
+def run_scheduled():
+    # Two analysis workers leave LLM slots free for users.
+    limit = scheduled_llm_limit()
+    stages = STAGES if limit is not None else ('collect', 'details', 'publish')
+    try:
+        run(stages, llm_limit=limit or 0, dedup_limit=env_int('BATCH_DEDUP_LIMIT', 30), workers=2)
     except Busy:
         pass
 
@@ -321,7 +332,8 @@ def migrate_legacy():
 def main(argv=None):
     parser = argparse.ArgumentParser(description='이음온 공공 정책 일괄 수집·분석')
     parser.add_argument('--stages', default=','.join(STAGES), help='쉼표로 구분: ' + ','.join(STAGES))
-    parser.add_argument('--llm-limit', type=int, default=env_int('BATCH_LLM_LIMIT', 100), help='정책 분석 상한, 0은 전체')
+    limit = scheduled_llm_limit()  # BATCH_LLM_LIMIT=0 (off) must not turn into 'all' here, so fall back to 100
+    parser.add_argument('--llm-limit', type=int, default=100 if limit is None else limit, help='정책 분석 상한, 0은 전체')
     parser.add_argument('--dedup-limit', type=int, default=env_int('BATCH_DEDUP_LIMIT', 30), help='새 중복 판정 상한')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--dry-run', action='store_true')
